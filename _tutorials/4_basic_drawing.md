@@ -1,5 +1,5 @@
 ---
-layout: default
+layout: tutorial
 title: Basic drawing
 ---
 

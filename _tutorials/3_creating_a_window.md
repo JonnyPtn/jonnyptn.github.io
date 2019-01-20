@@ -1,5 +1,5 @@
 ---
-layout: default
+layout: tutorial
 title: Creating A Window
 ---
 

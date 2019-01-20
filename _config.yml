@@ -17,7 +17,7 @@ title: Jonny's SFML tutorials
 description: >- # this means to ignore newlines until "baseurl:"
   A collection of SFML tutorials
 baseurl: "" # the subpath of your site, e.g. /blog
-url: "" # the base hostname & protocol for your site, e.g. http://example.com
+url: "https://jonnyptn.github.io" # the base hostname & protocol for your site, e.g. http://example.com
 twitter_username: JonnyPtn
 github_username:  JonnyPtn
 

@@ -25,4 +25,6 @@ window.draw(circle);
 window.display();
 ```
 
+Anything which inherits from the `sf::Drawable` class can be drawn in this way.
+
 

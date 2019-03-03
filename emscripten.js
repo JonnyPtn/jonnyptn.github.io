@@ -20,7 +20,184 @@ var Module = typeof Module !== 'undefined' ? Module : {};
 
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-// {{PRE_JSES}}
+
+if (!Module.expectedDataFileDownloads) {
+  Module.expectedDataFileDownloads = 0;
+  Module.finishedDataFileDownloads = 0;
+}
+Module.expectedDataFileDownloads++;
+(function() {
+ var loadPackage = function(metadata) {
+
+    var PACKAGE_PATH;
+    if (typeof window === 'object') {
+      PACKAGE_PATH = window['encodeURIComponent'](window.location.pathname.toString().substring(0, window.location.pathname.toString().lastIndexOf('/')) + '/');
+    } else if (typeof location !== 'undefined') {
+      // worker
+      PACKAGE_PATH = encodeURIComponent(location.pathname.toString().substring(0, location.pathname.toString().lastIndexOf('/')) + '/');
+    } else {
+      throw 'using preloaded data can only be done on a web page or in a web worker';
+    }
+    var PACKAGE_NAME = 'emscripten.data';
+    var REMOTE_PACKAGE_BASE = 'emscripten.data';
+    if (typeof Module['locateFilePackage'] === 'function' && !Module['locateFile']) {
+      Module['locateFile'] = Module['locateFilePackage'];
+      err('warning: you defined Module.locateFilePackage, that has been renamed to Module.locateFile (using your locateFilePackage for now)');
+    }
+    var REMOTE_PACKAGE_NAME = Module['locateFile'] ? Module['locateFile'](REMOTE_PACKAGE_BASE, '') : REMOTE_PACKAGE_BASE;
+  
+    var REMOTE_PACKAGE_SIZE = metadata.remote_package_size;
+    var PACKAGE_UUID = metadata.package_uuid;
+  
+    function fetchRemotePackage(packageName, packageSize, callback, errback) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', packageName, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onprogress = function(event) {
+        var url = packageName;
+        var size = packageSize;
+        if (event.total) size = event.total;
+        if (event.loaded) {
+          if (!xhr.addedTotal) {
+            xhr.addedTotal = true;
+            if (!Module.dataFileDownloads) Module.dataFileDownloads = {};
+            Module.dataFileDownloads[url] = {
+              loaded: event.loaded,
+              total: size
+            };
+          } else {
+            Module.dataFileDownloads[url].loaded = event.loaded;
+          }
+          var total = 0;
+          var loaded = 0;
+          var num = 0;
+          for (var download in Module.dataFileDownloads) {
+          var data = Module.dataFileDownloads[download];
+            total += data.total;
+            loaded += data.loaded;
+            num++;
+          }
+          total = Math.ceil(total * Module.expectedDataFileDownloads/num);
+          if (Module['setStatus']) Module['setStatus']('Downloading data... (' + loaded + '/' + total + ')');
+        } else if (!Module.dataFileDownloads) {
+          if (Module['setStatus']) Module['setStatus']('Downloading data...');
+        }
+      };
+      xhr.onerror = function(event) {
+        throw new Error("NetworkError for: " + packageName);
+      }
+      xhr.onload = function(event) {
+        if (xhr.status == 200 || xhr.status == 304 || xhr.status == 206 || (xhr.status == 0 && xhr.response)) { // file URLs can return 0
+          var packageData = xhr.response;
+          callback(packageData);
+        } else {
+          throw new Error(xhr.statusText + " : " + xhr.responseURL);
+        }
+      };
+      xhr.send(null);
+    };
+
+    function handleError(error) {
+      console.error('package error:', error);
+    };
+  
+      var fetchedCallback = null;
+      var fetched = Module['getPreloadedPackage'] ? Module['getPreloadedPackage'](REMOTE_PACKAGE_NAME, REMOTE_PACKAGE_SIZE) : null;
+
+      if (!fetched) fetchRemotePackage(REMOTE_PACKAGE_NAME, REMOTE_PACKAGE_SIZE, function(data) {
+        if (fetchedCallback) {
+          fetchedCallback(data);
+          fetchedCallback = null;
+        } else {
+          fetched = data;
+        }
+      }, handleError);
+    
+  function runWithFS() {
+
+    function assert(check, msg) {
+      if (!check) throw msg + new Error().stack;
+    }
+
+    function DataRequest(start, end, audio) {
+      this.start = start;
+      this.end = end;
+      this.audio = audio;
+    }
+    DataRequest.prototype = {
+      requests: {},
+      open: function(mode, name) {
+        this.name = name;
+        this.requests[name] = this;
+        Module['addRunDependency']('fp ' + this.name);
+      },
+      send: function() {},
+      onload: function() {
+        var byteArray = this.byteArray.subarray(this.start, this.end);
+        this.finish(byteArray);
+      },
+      finish: function(byteArray) {
+        var that = this;
+
+        Module['FS_createDataFile'](this.name, null, byteArray, true, true, true); // canOwn this data in the filesystem, it is a slide into the heap that will never change
+        Module['removeRunDependency']('fp ' + that.name);
+
+        this.requests[this.name] = null;
+      }
+    };
+
+        var files = metadata.files;
+        for (var i = 0; i < files.length; ++i) {
+          new DataRequest(files[i].start, files[i].end, files[i].audio).open('GET', files[i].filename);
+        }
+
+  
+    function processPackageData(arrayBuffer) {
+      Module.finishedDataFileDownloads++;
+      assert(arrayBuffer, 'Loading data file failed.');
+      assert(arrayBuffer instanceof ArrayBuffer, 'bad input to processPackageData');
+      var byteArray = new Uint8Array(arrayBuffer);
+      var curr;
+      
+        // copy the entire loaded file into a spot in the heap. Files will refer to slices in that. They cannot be freed though
+        // (we may be allocating before malloc is ready, during startup).
+        var ptr = Module['getMemory'](byteArray.length);
+        Module['HEAPU8'].set(byteArray, ptr);
+        DataRequest.prototype.byteArray = Module['HEAPU8'].subarray(ptr, ptr+byteArray.length);
+  
+          var files = metadata.files;
+          for (var i = 0; i < files.length; ++i) {
+            DataRequest.prototype.requests[files[i].filename].onload();
+          }
+              Module['removeRunDependency']('datafile_emscripten.data');
+
+    };
+    Module['addRunDependency']('datafile_emscripten.data');
+  
+    if (!Module.preloadResults) Module.preloadResults = {};
+  
+      Module.preloadResults[PACKAGE_NAME] = {fromCache: false};
+      if (fetched) {
+        processPackageData(fetched);
+        fetched = null;
+      } else {
+        fetchedCallback = processPackageData;
+      }
+    
+  }
+  if (Module['calledRun']) {
+    runWithFS();
+  } else {
+    if (!Module['preRun']) Module['preRun'] = [];
+    Module["preRun"].push(runWithFS); // FS is not initialized yet, wait for it
+  }
+
+ }
+ loadPackage({"files": [{"start": 0, "audio": 0, "end": 28912, "filename": "/sansation.ttf"}, {"start": 28912, "audio": 1, "end": 44354, "filename": "/ball.wav"}], "remote_package_size": 44354, "package_uuid": "8e449a22-6d3d-4625-9844-e0ffca2cbff5"});
+
+})();
+
+
 
 // Sometimes an existing Module object exists with properties
 // meant to overwrite the default module functionality. Here
@@ -1101,11 +1278,11 @@ function updateGlobalBufferViews() {
 
 
 var STATIC_BASE = 1024,
-    STACK_BASE = 282656,
+    STACK_BASE = 860464,
     STACKTOP = STACK_BASE,
-    STACK_MAX = 5525536,
-    DYNAMIC_BASE = 5525536,
-    DYNAMICTOP_PTR = 282400;
+    STACK_MAX = 6103344,
+    DYNAMIC_BASE = 6103344,
+    DYNAMICTOP_PTR = 860208;
 
 assert(STACK_BASE % 16 === 0, 'stack must start aligned');
 assert(DYNAMIC_BASE % 16 === 0, 'heap must start aligned');
@@ -1677,8 +1854,8 @@ var ASM_CONSTS = [];
 
 STATIC_BASE = GLOBAL_BASE;
 
-// STATICTOP = STATIC_BASE + 281632;
-/* global initializers */  __ATINIT__.push({ func: function() { __GLOBAL__I_000101() } }, { func: function() { __GLOBAL__sub_I_Emscripten_cpp() } }, { func: function() { __GLOBAL__sub_I_Color_cpp() } }, { func: function() { __GLOBAL__sub_I_RenderStates_cpp() } }, { func: function() { __GLOBAL__sub_I_RenderTarget_cpp() } }, { func: function() { __GLOBAL__sub_I_Texture_cpp() } }, { func: function() { __GLOBAL__sub_I_Transform_cpp() } }, { func: function() { __GLOBAL__sub_I_VertexBuffer_cpp() } }, { func: function() { __GLOBAL__sub_I_BlendMode_cpp() } }, { func: function() { __GLOBAL__sub_I_JoystickImpl_cpp() } }, { func: function() { __GLOBAL__sub_I_Angle_cpp() } }, { func: function() { __GLOBAL__sub_I_Time_cpp() } }, { func: function() { __GLOBAL__sub_I_bgfx_cpp() } }, { func: function() { __GLOBAL__sub_I_math_cpp() } }, { func: function() { ___emscripten_environ_constructor() } }, { func: function() { __GLOBAL__sub_I_iostream_cpp() } });
+// STATICTOP = STATIC_BASE + 859440;
+/* global initializers */  __ATINIT__.push({ func: function() { __GLOBAL__sub_I_Emscripten_cpp() } }, { func: function() { __GLOBAL__sub_I_RenderStates_cpp() } }, { func: function() { __GLOBAL__sub_I_RenderTarget_cpp() } }, { func: function() { __GLOBAL__sub_I_math_cpp() } }, { func: function() { ___emscripten_environ_constructor() } });
 
 
 
@@ -1686,12 +1863,12 @@ STATIC_BASE = GLOBAL_BASE;
 
 
 
-var STATIC_BUMP = 281632;
+var STATIC_BUMP = 859440;
 Module["STATIC_BASE"] = STATIC_BASE;
 Module["STATIC_BUMP"] = STATIC_BUMP;
 
 /* no memory initializer */
-var tempDoublePtr = 282640
+var tempDoublePtr = 860448
 assert(tempDoublePtr % 8 == 0);
 
 function copyTempFloat(ptr) { // functions, because inlining this code increases code size too much
@@ -3185,11 +3362,11 @@ function copyTempDouble(ptr) {
   
   var ERRNO_CODES={EPERM:1,ENOENT:2,ESRCH:3,EINTR:4,EIO:5,ENXIO:6,E2BIG:7,ENOEXEC:8,EBADF:9,ECHILD:10,EAGAIN:11,EWOULDBLOCK:11,ENOMEM:12,EACCES:13,EFAULT:14,ENOTBLK:15,EBUSY:16,EEXIST:17,EXDEV:18,ENODEV:19,ENOTDIR:20,EISDIR:21,EINVAL:22,ENFILE:23,EMFILE:24,ENOTTY:25,ETXTBSY:26,EFBIG:27,ENOSPC:28,ESPIPE:29,EROFS:30,EMLINK:31,EPIPE:32,EDOM:33,ERANGE:34,ENOMSG:42,EIDRM:43,ECHRNG:44,EL2NSYNC:45,EL3HLT:46,EL3RST:47,ELNRNG:48,EUNATCH:49,ENOCSI:50,EL2HLT:51,EDEADLK:35,ENOLCK:37,EBADE:52,EBADR:53,EXFULL:54,ENOANO:55,EBADRQC:56,EBADSLT:57,EDEADLOCK:35,EBFONT:59,ENOSTR:60,ENODATA:61,ETIME:62,ENOSR:63,ENONET:64,ENOPKG:65,EREMOTE:66,ENOLINK:67,EADV:68,ESRMNT:69,ECOMM:70,EPROTO:71,EMULTIHOP:72,EDOTDOT:73,EBADMSG:74,ENOTUNIQ:76,EBADFD:77,EREMCHG:78,ELIBACC:79,ELIBBAD:80,ELIBSCN:81,ELIBMAX:82,ELIBEXEC:83,ENOSYS:38,ENOTEMPTY:39,ENAMETOOLONG:36,ELOOP:40,EOPNOTSUPP:95,EPFNOSUPPORT:96,ECONNRESET:104,ENOBUFS:105,EAFNOSUPPORT:97,EPROTOTYPE:91,ENOTSOCK:88,ENOPROTOOPT:92,ESHUTDOWN:108,ECONNREFUSED:111,EADDRINUSE:98,ECONNABORTED:103,ENETUNREACH:101,ENETDOWN:100,ETIMEDOUT:110,EHOSTDOWN:112,EHOSTUNREACH:113,EINPROGRESS:115,EALREADY:114,EDESTADDRREQ:89,EMSGSIZE:90,EPROTONOSUPPORT:93,ESOCKTNOSUPPORT:94,EADDRNOTAVAIL:99,ENETRESET:102,EISCONN:106,ENOTCONN:107,ETOOMANYREFS:109,EUSERS:87,EDQUOT:122,ESTALE:116,ENOTSUP:95,ENOMEDIUM:123,EILSEQ:84,EOVERFLOW:75,ECANCELED:125,ENOTRECOVERABLE:131,EOWNERDEAD:130,ESTRPIPE:86};
   
-  var _stdin=282416;
+  var _stdin=860224;
   
-  var _stdout=282432;
+  var _stdout=860240;
   
-  var _stderr=282448;var FS={root:null,mounts:[],devices:{},streams:[],nextInode:1,nameTable:null,currentPath:"/",initialized:false,ignorePermissions:true,trackingDelegate:{},tracking:{openFlags:{READ:1,WRITE:2}},ErrnoError:null,genericErrors:{},filesystems:null,syncFSRequests:0,handleFSError:function (e) {
+  var _stderr=860256;var FS={root:null,mounts:[],devices:{},streams:[],nextInode:1,nameTable:null,currentPath:"/",initialized:false,ignorePermissions:true,trackingDelegate:{},tracking:{openFlags:{READ:1,WRITE:2}},ErrnoError:null,genericErrors:{},filesystems:null,syncFSRequests:0,handleFSError:function (e) {
         if (!(e instanceof FS.ErrnoError)) throw e + ' : ' + stackTrace();
         return ___setErrNo(e.errno);
       },lookupPath:function (path, opts) {
@@ -5208,30 +5385,6 @@ function copyTempDouble(ptr) {
     }
 
   
-  function _emscripten_get_now() { abort() }
-  
-  function _emscripten_get_now_is_monotonic() {
-      // return whether emscripten_get_now is guaranteed monotonic; the Date.now
-      // implementation is not :(
-      return ENVIRONMENT_IS_NODE || (typeof dateNow !== 'undefined') ||
-          ((ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) && self['performance'] && self['performance']['now']);
-    }function _clock_gettime(clk_id, tp) {
-      // int clock_gettime(clockid_t clk_id, struct timespec *tp);
-      var now;
-      if (clk_id === 0) {
-        now = Date.now();
-      } else if (clk_id === 1 && _emscripten_get_now_is_monotonic()) {
-        now = _emscripten_get_now();
-      } else {
-        ___setErrNo(22);
-        return -1;
-      }
-      HEAP32[((tp)>>2)]=(now/1000)|0; // seconds
-      HEAP32[(((tp)+(4))>>2)]=((now % 1000)*1000*1000)|0; // nanoseconds
-      return 0;
-    }
-
-  
   
   
   
@@ -5284,7 +5437,9 @@ function copyTempDouble(ptr) {
         Browser.mainLoop.method = 'immediate';
       }
       return 0;
-    }function _emscripten_set_main_loop(func, fps, simulateInfiniteLoop, arg, noSetTiming) {
+    }
+  
+  function _emscripten_get_now() { abort() }function _emscripten_set_main_loop(func, fps, simulateInfiniteLoop, arg, noSetTiming) {
       Module['noExitRuntime'] = true;
   
       assert(!Browser.mainLoop.func, 'emscripten_set_main_loop: there can only be one main loop function at once: call emscripten_cancel_main_loop to cancel the previous one before setting a new one with different parameters.');
@@ -6004,7 +6159,1930 @@ function copyTempDouble(ptr) {
         var handle = Browser.nextWgetRequestHandle;
         Browser.nextWgetRequestHandle++;
         return handle;
-      }};var EGL={errorCode:12288,defaultDisplayInitialized:false,currentContext:0,currentReadSurface:0,currentDrawSurface:0,contextAttributes:{alpha:false,depth:false,stencil:false,antialias:false},stringCache:{},setErrorCode:function (code) {
+      }};var AL={QUEUE_INTERVAL:25,QUEUE_LOOKAHEAD:0.1,DEVICE_NAME:"Emscripten OpenAL",CAPTURE_DEVICE_NAME:"Emscripten OpenAL capture",ALC_EXTENSIONS:{ALC_SOFT_pause_device:true,ALC_SOFT_HRTF:true},AL_EXTENSIONS:{AL_EXT_float32:true,AL_SOFT_loop_points:true,AL_SOFT_source_length:true,AL_EXT_source_distance_model:true,AL_SOFT_source_spatialize:true},_alcErr:0,alcErr:0,deviceRefCounts:{},alcStringCache:{},paused:false,stringCache:{},contexts:{},currentCtx:null,buffers:{0:{id:0,refCount:0,audioBuf:null,frequency:0,bytesPerSample:2,channels:1,length:0}},paramArray:[],_nextId:1,newId:function () {
+        return AL.freeIds.length > 0 ? AL.freeIds.pop() : AL._nextId++;
+      },freeIds:[],scheduleContextAudio:function (ctx) {
+        // If we are animating using the requestAnimationFrame method, then the main loop does not run when in the background.
+        // To give a perfect glitch-free audio stop when switching from foreground to background, we need to avoid updating
+        // audio altogether when in the background, so detect that case and kill audio buffer streaming if so.
+        if (Browser.mainLoop.timingMode === 1 /* EM_TIMING_RAF */ && document['visibilityState'] != 'visible') {
+          return;
+        }
+  
+        for (var i in ctx.sources) {
+          AL.scheduleSourceAudio(ctx.sources[i]);
+        }
+      },scheduleSourceAudio:function (src, lookahead) {
+        // See comment on scheduleContextAudio above.
+        if (Browser.mainLoop.timingMode === 1 /*EM_TIMING_RAF*/ && document['visibilityState'] != 'visible') {
+          return;
+        }
+        if (src.state !== 0x1012 /* AL_PLAYING */) {
+          return;
+        }
+  
+        var currentTime = AL.updateSourceTime(src);
+  
+        var startTime = src.bufStartTime;
+        var startOffset = src.bufOffset;
+        var bufCursor = src.bufsProcessed;
+  
+        // Advance past any audio that is already scheduled
+        for (var i = 0; i < src.audioQueue.length; i++) {
+          var audioSrc = src.audioQueue[i];
+          startTime = audioSrc._startTime + audioSrc._duration;
+          startOffset = 0.0;
+          bufCursor += audioSrc._skipCount + 1;
+        }
+  
+        if (!lookahead) {
+          lookahead = AL.QUEUE_LOOKAHEAD;
+        }
+        var lookaheadTime = currentTime + lookahead;
+        var skipCount = 0;
+        while (startTime < lookaheadTime) {
+          if (bufCursor >= src.bufQueue.length) {
+            if (src.looping) {
+              bufCursor %= src.bufQueue.length;
+            } else {
+              break;
+            }
+          }
+  
+          var buf = src.bufQueue[bufCursor % src.bufQueue.length];
+          // If the buffer contains no data, skip it
+          if (buf.length === 0) {
+            skipCount++;
+            // If we've gone through the whole queue and everything is 0 length, just give up
+            if (skipCount === src.bufQueue.length) {
+              break;
+            }
+          } else {
+            var audioSrc = src.context.audioCtx.createBufferSource();
+            audioSrc.buffer = buf.audioBuf;
+            audioSrc.playbackRate.value = src.playbackRate;
+            if (buf.audioBuf._loopStart || buf.audioBuf._loopEnd) {
+              audioSrc.loopStart = buf.audioBuf._loopStart;
+              audioSrc.loopEnd = buf.audioBuf._loopEnd;
+            }
+  
+            var duration = 0.0;
+            // If the source is a looping static buffer, use native looping for gapless playback
+            if (src.type === 0x1028 /* AL_STATIC */ && src.looping) {
+              duration = Number.POSITIVE_INFINITY;
+              audioSrc.loop = true;
+              if (buf.audioBuf._loopStart) {
+                audioSrc.loopStart = buf.audioBuf._loopStart;
+              }
+              if (buf.audioBuf._loopEnd) {
+                audioSrc.loopEnd = buf.audioBuf._loopEnd;
+              }
+            } else {
+              duration = (buf.audioBuf.duration - startOffset) / src.playbackRate;
+            }
+  
+            audioSrc._startOffset = startOffset;
+            audioSrc._duration = duration;
+            audioSrc._skipCount = skipCount;
+            skipCount = 0;
+  
+            audioSrc.connect(src.gain);
+  
+            if (typeof(audioSrc.start) !== 'undefined') {
+              // Sample the current time as late as possible to mitigate drift
+              startTime = Math.max(startTime, src.context.audioCtx.currentTime);
+              audioSrc.start(startTime, startOffset);
+            } else if (typeof(audioSrc.noteOn) !== 'undefined') {
+              startTime = Math.max(startTime, src.context.audioCtx.currentTime);
+              audioSrc.noteOn(startTime);
+            }
+            audioSrc._startTime = startTime;
+            src.audioQueue.push(audioSrc);
+  
+            startTime += duration;
+          }
+  
+          startOffset = 0.0;
+          bufCursor++;
+        }
+      },updateSourceTime:function (src) {
+        var currentTime = src.context.audioCtx.currentTime;
+        if (src.state !== 0x1012 /* AL_PLAYING */) {
+          return currentTime;
+        }
+  
+        // if the start time is unset, determine it based on the current offset.
+        // This will be the case when a source is resumed after being paused, and
+        // allows us to pretend that the source actually started playing some time
+        // in the past such that it would just now have reached the stored offset.
+        if (!isFinite(src.bufStartTime)) {
+          src.bufStartTime = currentTime - src.bufOffset / src.playbackRate;
+          src.bufOffset = 0.0;
+        }
+  
+        var nextStartTime = 0.0;
+        while (src.audioQueue.length) {
+          var audioSrc = src.audioQueue[0];
+          src.bufsProcessed += audioSrc._skipCount;
+          nextStartTime = audioSrc._startTime + audioSrc._duration; // n.b. audioSrc._duration already factors in playbackRate, so no divide by src.playbackRate on it.
+  
+          if (currentTime < nextStartTime) {
+            break;
+          }
+  
+          src.audioQueue.shift();
+          src.bufStartTime = nextStartTime;
+          src.bufOffset = 0.0;
+          src.bufsProcessed++;
+        }
+  
+        if (src.bufsProcessed >= src.bufQueue.length && !src.looping) {
+          // The source has played its entire queue and is non-looping, so just mark it as stopped.
+          AL.setSourceState(src, 0x1014 /* AL_STOPPED */);
+        } else if (src.type === 0x1028 /* AL_STATIC */ && src.looping) {
+          // If the source is a looping static buffer, determine the buffer offset based on the loop points
+          var buf = src.bufQueue[0];
+          if (buf.length === 0) {
+            src.bufOffset = 0.0;
+          } else {
+            var delta = (currentTime - src.bufStartTime) * src.playbackRate;
+            var loopStart = buf.audioBuf._loopStart || 0.0;
+            var loopEnd = buf.audioBuf._loopEnd || buf.audioBuf.duration;
+            if (loopEnd <= loopStart) {
+              loopEnd = buf.audioBuf.duration;
+            }
+  
+            if (delta < loopEnd) {
+              src.bufOffset = delta;
+            } else {
+              src.bufOffset = loopStart + (delta - loopStart) % (loopEnd - loopStart);
+            }
+          }
+        } else if (src.audioQueue[0]) {
+          // The source is still actively playing, so we just need to calculate where we are in the current buffer
+          // so it can be remembered if the source gets paused.
+          src.bufOffset = (currentTime - src.audioQueue[0]._startTime) * src.playbackRate;
+        } else {
+          // The source hasn't finished yet, but there is no scheduled audio left for it. This can be because
+          // the source has just been started/resumed, or due to an underrun caused by a long blocking operation.
+          // We need to determine what state we would be in by this point in time so that when we next schedule
+          // audio playback, it will be just as if no underrun occurred.
+  
+          if (src.type !== 0x1028 /* AL_STATIC */ && src.looping) {
+            // if the source is a looping buffer queue, let's first calculate the queue duration, so we can
+            // quickly fast forward past any full loops of the queue and only worry about the remainder.
+            var srcDuration = AL.sourceDuration(src) / src.playbackRate;
+            if (srcDuration > 0.0) {
+              src.bufStartTime += Math.floor((currentTime - src.bufStartTime) / srcDuration) * srcDuration;
+            }
+          }
+  
+          // Since we've already skipped any full-queue loops if there were any, we just need to find
+          // out where in the queue the remaining time puts us, which won't require stepping through the
+          // entire queue more than once.
+          for (var i = 0; i < src.bufQueue.length; i++) {
+            if (src.bufsProcessed >= src.bufQueue.length) {
+              if (src.looping) {
+                src.bufsProcessed %= src.bufQueue.length;
+              } else {
+                AL.setSourceState(src, 0x1014 /* AL_STOPPED */);
+                break;
+              }
+            }
+  
+            var buf = src.bufQueue[src.bufsProcessed];
+            if (buf.length > 0) {
+              nextStartTime = src.bufStartTime + buf.audioBuf.duration / src.playbackRate;
+  
+              if (currentTime < nextStartTime) {
+                src.bufOffset = (currentTime - src.bufStartTime) * src.playbackRate;
+                break;
+              }
+  
+              src.bufStartTime = nextStartTime;
+            }
+  
+            src.bufOffset = 0.0;
+            src.bufsProcessed++;
+          }
+        }
+  
+        return currentTime;
+      },cancelPendingSourceAudio:function (src) {
+        AL.updateSourceTime(src);
+  
+        for (var i = 1; i < src.audioQueue.length; i++) {
+          var audioSrc = src.audioQueue[i];
+          audioSrc.stop();
+        }
+  
+        if (src.audioQueue.length > 1) {
+          src.audioQueue.length = 1;
+        }
+      },stopSourceAudio:function (src) {
+        for (var i = 0; i < src.audioQueue.length; i++) {
+          src.audioQueue[i].stop();
+        }
+        src.audioQueue.length = 0;
+      },setSourceState:function (src, state) {
+        if (state === 0x1012 /* AL_PLAYING */) {
+          if (src.state === 0x1012 /* AL_PLAYING */ || src.state == 0x1014 /* AL_STOPPED */) {
+            src.bufsProcessed = 0;
+            src.bufOffset = 0.0;
+          } else {
+          }
+  
+          AL.stopSourceAudio(src);
+  
+          src.state = 0x1012 /* AL_PLAYING */;
+          src.bufStartTime = Number.NEGATIVE_INFINITY;
+          AL.scheduleSourceAudio(src);
+        } else if (state === 0x1013 /* AL_PAUSED */) {
+          if (src.state === 0x1012 /* AL_PLAYING */) {
+            // Store off the current offset to restore with on resume.
+            AL.updateSourceTime(src);
+            AL.stopSourceAudio(src);
+  
+            src.state = 0x1013 /* AL_PAUSED */;
+          }
+        } else if (state === 0x1014 /* AL_STOPPED */) {
+          if (src.state !== 0x1011 /* AL_INITIAL */) {
+            src.state = 0x1014 /* AL_STOPPED */;
+            src.bufsProcessed = src.bufQueue.length;
+            src.bufStartTime = Number.NEGATIVE_INFINITY;
+            src.bufOffset = 0.0;
+            AL.stopSourceAudio(src);
+          }
+        } else if (state === 0x1011 /* AL_INITIAL */) {
+          if (src.state !== 0x1011 /* AL_INITIAL */) {
+            src.state = 0x1011 /* AL_INITIAL */;
+            src.bufsProcessed = 0;
+            src.bufStartTime = Number.NEGATIVE_INFINITY;
+            src.bufOffset = 0.0;
+            AL.stopSourceAudio(src);
+          }
+        }
+      },initSourcePanner:function (src) {
+        if (src.type === 0x1030 /* AL_UNDETERMINED */) {
+          return;
+        }
+  
+        // Find the first non-zero buffer in the queue to determine the proper format
+        var templateBuf = AL.buffers[0];
+        for (var i = 0; i < src.bufQueue.length; i++) {
+          if (src.bufQueue[i].id !== 0) {
+            templateBuf = src.bufQueue[i];
+            break;
+          }
+        }
+        // Create a panner if AL_SOURCE_SPATIALIZE_SOFT is set to true, or alternatively if it's set to auto and the source is mono
+        if (src.spatialize === 1 /* AL_TRUE */ || (src.spatialize === 2 /* AL_AUTO_SOFT */ && templateBuf.channels === 1)) {
+          if (src.panner) {
+            return;
+          }
+          src.panner = src.context.audioCtx.createPanner();
+  
+          AL.updateSourceGlobal(src);
+          AL.updateSourceSpace(src);
+  
+          src.panner.connect(src.context.gain);
+          src.gain.disconnect();
+          src.gain.connect(src.panner);
+        } else {
+          if (!src.panner) {
+            return;
+          }
+  
+          src.panner.disconnect();
+          src.gain.disconnect();
+          src.gain.connect(src.context.gain);
+          src.panner = null;
+        }
+      },updateContextGlobal:function (ctx) {
+        for (var i in ctx.sources) {
+          AL.updateSourceGlobal(ctx.sources[i]);
+        }
+      },updateSourceGlobal:function (src) {
+        var panner = src.panner;
+        if (!panner) {
+          return;
+        }
+  
+        panner.refDistance = src.refDistance;
+        panner.maxDistance = src.maxDistance;
+        panner.rolloffFactor = src.rolloffFactor;
+  
+        panner.panningModel = src.context.hrtf ? 'HRTF' : 'equalpower';
+  
+        // Use the source's distance model if AL_SOURCE_DISTANCE_MODEL is enabled
+        var distanceModel = src.context.sourceDistanceModel ? src.distanceModel : src.context.distanceModel;
+        switch (distanceModel) {
+        case 0 /* AL_NONE */:
+          panner.distanceModel = 'inverse';
+          panner.refDistance = 3.40282e38 /* FLT_MAX */;
+          break;
+        case 0xd001 /* AL_INVERSE_DISTANCE */:
+        case 0xd002 /* AL_INVERSE_DISTANCE_CLAMPED */:
+          panner.distanceModel = 'inverse';
+          break;
+        case 0xd003 /* AL_LINEAR_DISTANCE */:
+        case 0xd004 /* AL_LINEAR_DISTANCE_CLAMPED */:
+          panner.distanceModel = 'linear';
+          break;
+        case 0xd005 /* AL_EXPONENT_DISTANCE */:
+        case 0xd006 /* AL_EXPONENT_DISTANCE_CLAMPED */:
+          panner.distanceModel = 'exponential';
+          break;
+        }
+      },updateListenerSpace:function (ctx) {
+        var listener = ctx.audioCtx.listener;
+        if (listener.positionX) {
+          listener.positionX.value = ctx.listener.position[0];
+          listener.positionY.value = ctx.listener.position[1];
+          listener.positionZ.value = ctx.listener.position[2];
+        } else {
+          listener.setPosition(ctx.listener.position[0], ctx.listener.position[1], ctx.listener.position[2]);
+        }
+        if (listener.forwardX) {
+          listener.forwardX.value = ctx.listener.direction[0];
+          listener.forwardY.value = ctx.listener.direction[1];
+          listener.forwardZ.value = ctx.listener.direction[2];
+          listener.upX.value = ctx.listener.up[0];
+          listener.upY.value = ctx.listener.up[1];
+          listener.upZ.value = ctx.listener.up[2];
+        } else {
+          listener.setOrientation(
+            ctx.listener.direction[0], ctx.listener.direction[1], ctx.listener.direction[2],
+            ctx.listener.up[0], ctx.listener.up[1], ctx.listener.up[2]);
+        }
+  
+        // Update sources that are relative to the listener
+        for (var i in ctx.sources) {
+          AL.updateSourceSpace(ctx.sources[i]);
+        }
+      },updateSourceSpace:function (src) {
+        if (!src.panner) {
+          return;
+        }
+        var panner = src.panner;
+  
+        var posX = src.position[0];
+        var posY = src.position[1];
+        var posZ = src.position[2];
+        var dirX = src.direction[0];
+        var dirY = src.direction[1];
+        var dirZ = src.direction[2];
+  
+        var listener = src.context.listener;
+        var lPosX = listener.position[0];
+        var lPosY = listener.position[1];
+        var lPosZ = listener.position[2];
+  
+        // WebAudio does spatialization in world-space coordinates, meaning both the buffer sources and
+        // the listener position are in the same absolute coordinate system relative to a fixed origin.
+        // By default, OpenAL works this way as well, but it also provides a "listener relative" mode, where
+        // a buffer source's coordinate are interpreted not in absolute world space, but as being relative
+        // to the listener object itself, so as the listener moves the source appears to move with it
+        // with no update required. Since web audio does not support this mode, we must transform the source
+        // coordinates from listener-relative space to absolute world space.
+        //
+        // We do this via affine transformation matrices applied to the source position and source direction.
+        // A change-of-basis converts from listener-space displacements to world-space displacements,
+        // which must be done for both the source position and direction. Lastly, the source position must be
+        // added to the listener position to get the final source position, since the source position represents
+        // a displacement from the listener.
+        if (src.relative) {
+          // Negate the listener direction since forward is -Z.
+          var lBackX = -listener.direction[0];
+          var lBackY = -listener.direction[1];
+          var lBackZ = -listener.direction[2];
+          var lUpX = listener.up[0];
+          var lUpY = listener.up[1];
+          var lUpZ = listener.up[2];
+  
+          function inverseMagnitude(x, y, z) {
+            var length = Math.sqrt(x * x + y * y + z * z);
+  
+            if (length < Number.EPSILON) {
+              return 0.0;
+            }
+  
+            return 1.0 / length;
+          }
+  
+          // Normalize the Back vector
+          var invMag = inverseMagnitude(lBackX, lBackY, lBackZ);
+          lBackX *= invMag;
+          lBackY *= invMag;
+          lBackZ *= invMag;
+  
+          // ...and the Up vector
+          var invMag = inverseMagnitude(lUpX, lUpY, lUpZ);
+          lUpX *= invMag;
+          lUpY *= invMag;
+          lUpZ *= invMag;
+  
+          // Calculate the Right vector as the cross product of the Up and Back vectors
+          var lRightX = (lUpY * lBackZ - lUpZ * lBackY);
+          var lRightY = (lUpZ * lBackX - lUpX * lBackZ);
+          var lRightZ = (lUpX * lBackY - lUpY * lBackX);
+  
+          // Back and Up might not be exactly perpendicular, so the cross product also needs normalization
+          var invMag = inverseMagnitude(lRightX, lRightY, lRightZ);
+          lRightX *= invMag;
+          lRightY *= invMag;
+          lRightZ *= invMag;
+  
+          // Recompute Up from the now orthonormal Right and Back vectors so we have a fully orthonormal basis
+          var lUpX = (lBackY * lRightZ - lBackZ * lRightY);
+          var lUpY = (lBackZ * lRightX - lBackX * lRightZ);
+          var lUpZ = (lBackX * lRightY - lBackY * lRightX);
+  
+          var oldX = dirX;
+          var oldY = dirY;
+          var oldZ = dirZ;
+  
+          // Use our 3 vectors to apply a change-of-basis matrix to the source direction
+          dirX = oldX * lRightX + oldY * lUpX + oldZ * lBackX;
+          dirY = oldX * lRightY + oldY * lUpY + oldZ * lBackY;
+          dirZ = oldX * lRightZ + oldY * lUpZ + oldZ * lBackZ;
+  
+          var oldX = posX;
+          var oldY = posY;
+          var oldZ = posZ;
+  
+          // ...and to the source position
+          posX = oldX * lRightX + oldY * lUpX + oldZ * lBackX;
+          posY = oldX * lRightY + oldY * lUpY + oldZ * lBackY;
+          posZ = oldX * lRightZ + oldY * lUpZ + oldZ * lBackZ;
+  
+          // The change-of-basis corrects the orientation, but the origin is still the listener.
+          // Translate the source position by the listener position to finish.
+          posX += lPosX;
+          posY += lPosY;
+          posZ += lPosZ;
+        }
+  
+        if (panner.positionX) {
+          panner.positionX.value = posX;
+          panner.positionY.value = posY;
+          panner.positionZ.value = posZ;
+        } else {
+          panner.setPosition(posX, posY, posZ);
+        }
+        if (panner.orientationX) {
+          panner.orientationX.value = dirX;
+          panner.orientationY.value = dirY;
+          panner.orientationZ.value = dirZ;
+        } else {
+          panner.setOrientation(dirX, dirY, dirZ);
+        }
+  
+        var oldShift = src.dopplerShift;
+        var velX = src.velocity[0];
+        var velY = src.velocity[1];
+        var velZ = src.velocity[2];
+        var lVelX = listener.velocity[0];
+        var lVelY = listener.velocity[1];
+        var lVelZ = listener.velocity[2];
+        if (posX === lPosX && posY === lPosY && posZ === lPosZ
+          || velX === lVelX && velY === lVelY && velZ === lVelZ)
+        {
+          src.dopplerShift = 1.0;
+        } else {
+          // Doppler algorithm from 1.1 spec
+          var speedOfSound = src.context.speedOfSound;
+          var dopplerFactor = src.context.dopplerFactor;
+  
+          var slX = lPosX - posX;
+          var slY = lPosY - posY;
+          var slZ = lPosZ - posZ;
+  
+          var magSl = Math.sqrt(slX * slX + slY * slY + slZ * slZ);
+          var vls = (slX * lVelX + slY * lVelY + slZ * lVelZ) / magSl;
+          var vss = (slX * velX + slY * velY + slZ * velZ) / magSl;
+  
+          vls = Math.min(vls, speedOfSound / dopplerFactor);
+          vss = Math.min(vss, speedOfSound / dopplerFactor);
+  
+          src.dopplerShift = (speedOfSound - dopplerFactor * vls) / (speedOfSound - dopplerFactor * vss);
+        }
+        if (src.dopplerShift !== oldShift) {
+          AL.updateSourceRate(src);
+        }
+      },updateSourceRate:function (src) {
+        if (src.state === 0x1012 /* AL_PLAYING */) {
+          // clear scheduled buffers
+          AL.cancelPendingSourceAudio(src);
+  
+          var audioSrc = src.audioQueue[0];
+          if (!audioSrc) {
+            return; // It is possible that AL.scheduleContextAudio() has not yet fed the next buffer, if so, skip.
+          }
+  
+          var duration;
+          if (src.type === 0x1028 /* AL_STATIC */ && src.looping) {
+            duration = Number.POSITIVE_INFINITY;
+          } else {
+            // audioSrc._duration is expressed after factoring in playbackRate, so when changing playback rate, need
+            // to recompute/rescale the rate to the new playback speed.
+            duration = (audioSrc.buffer.duration - audioSrc._startOffset) / src.playbackRate;
+          }
+  
+          audioSrc._duration = duration;
+          audioSrc.playbackRate.value = src.playbackRate;
+  
+          // reschedule buffers with the new playbackRate
+          AL.scheduleSourceAudio(src);
+        }
+      },sourceDuration:function (src) {
+        var length = 0.0;
+        for (var i = 0; i < src.bufQueue.length; i++) {
+          var audioBuf = src.bufQueue[i].audioBuf;
+          length += audioBuf ? audioBuf.duration : 0.0;
+        }
+        return length;
+      },sourceTell:function (src) {
+        AL.updateSourceTime(src);
+  
+        var offset = 0.0;
+        for (var i = 0; i < src.bufsProcessed; i++) {
+          offset += src.bufQueue[i].audioBuf.duration;
+        }
+        offset += src.bufOffset;
+  
+        return offset;
+      },sourceSeek:function (src, offset) {
+        var playing = src.state == 0x1012 /* AL_PLAYING */;
+        if (playing) {
+          AL.setSourceState(src, 0x1011 /* AL_INITIAL */);
+        }
+  
+        if (src.bufQueue[src.bufsProcessed].audioBuf !== null) {
+          src.bufsProcessed = 0;
+          while (offset > src.bufQueue[src.bufsProcessed].audioBuf.duration) {
+            offset -= src.bufQueue[src.bufsProcessed].audiobuf.duration;
+            src.bufsProcessed++;
+          }
+  
+          src.bufOffset = offset;
+        }
+  
+        if (playing) {
+          AL.setSourceState(src, 0x1012 /* AL_PLAYING */);
+        }
+      },getGlobalParam:function (funcname, param) {
+        if (!AL.currentCtx) {
+          return null;
+        }
+  
+        switch (param) {
+        case 0xC000 /* AL_DOPPLER_FACTOR */:
+          return AL.currentCtx.dopplerFactor;
+        case 0xC003 /* AL_SPEED_OF_SOUND */:
+          return AL.currentCtx.speedOfSound;
+        case 0xD000 /* AL_DISTANCE_MODEL */:
+          return AL.currentCtx.distanceModel;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return null;
+        }
+      },setGlobalParam:function (funcname, param, value) {
+        if (!AL.currentCtx) {
+          return;
+        }
+  
+        switch (param) {
+        case 0xC000 /* AL_DOPPLER_FACTOR */:
+          if (!Number.isFinite(value) || value < 0.0) { // Strictly negative values are disallowed
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.currentCtx.dopplerFactor = value;
+          AL.updateListenerSpace(AL.currentCtx);
+          break;
+        case 0xC003 /* AL_SPEED_OF_SOUND */:
+          if (!Number.isFinite(value) || value <= 0.0) { // Negative or zero values are disallowed
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.currentCtx.speedOfSound = value;
+          AL.updateListenerSpace(AL.currentCtx);
+          break;
+        case 0xD000 /* AL_DISTANCE_MODEL */:
+          switch (value) {
+          case 0 /* AL_NONE */:
+          case 0xd001 /* AL_INVERSE_DISTANCE */:
+          case 0xd002 /* AL_INVERSE_DISTANCE_CLAMPED */:
+          case 0xd003 /* AL_LINEAR_DISTANCE */:
+          case 0xd004 /* AL_LINEAR_DISTANCE_CLAMPED */:
+          case 0xd005 /* AL_EXPONENT_DISTANCE */:
+          case 0xd006 /* AL_EXPONENT_DISTANCE_CLAMPED */:
+            AL.currentCtx.distanceModel = value;
+            AL.updateContextGlobal(AL.currentCtx);
+            break;
+          default:
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          break;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+      },getListenerParam:function (funcname, param) {
+        if (!AL.currentCtx) {
+          return null;
+        }
+  
+        switch (param) {
+        case 0x1004 /* AL_POSITION */:
+          return AL.currentCtx.listener.position;
+        case 0x1006 /* AL_VELOCITY */:
+          return AL.currentCtx.listener.velocity;
+        case 0x100F /* AL_ORIENTATION */:
+          return AL.currentCtx.listener.direction.concat(AL.currentCtx.listener.up);
+        case 0x100A /* AL_GAIN */:
+          return AL.currentCtx.gain.gain.value;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return null;
+        }
+      },setListenerParam:function (funcname, param, value) {
+        if (!AL.currentCtx) {
+          return;
+        }
+        if (value === null) {
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+  
+        var listener = AL.currentCtx.listener;
+        switch (param) {
+        case 0x1004 /* AL_POSITION */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          listener.position[0] = value[0];
+          listener.position[1] = value[1];
+          listener.position[2] = value[2];
+          AL.updateListenerSpace(AL.currentCtx);
+          break;
+        case 0x1006 /* AL_VELOCITY */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          listener.velocity[0] = value[0];
+          listener.velocity[1] = value[1];
+          listener.velocity[2] = value[2];
+          AL.updateListenerSpace(AL.currentCtx);
+          break;
+        case 0x100A /* AL_GAIN */:
+          if (!Number.isFinite(value) || value < 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.currentCtx.gain.gain.value = value;
+          break;
+        case 0x100F /* AL_ORIENTATION */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])
+            || !Number.isFinite(value[3]) || !Number.isFinite(value[4]) || !Number.isFinite(value[5])
+          ) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          listener.direction[0] = value[0];
+          listener.direction[1] = value[1];
+          listener.direction[2] = value[2];
+          listener.up[0] = value[3];
+          listener.up[1] = value[4];
+          listener.up[2] = value[5];
+          AL.updateListenerSpace(AL.currentCtx);
+          break;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+      },getBufferParam:function (funcname, bufferId, param) {
+        if (!AL.currentCtx) {
+          return;
+        }
+        var buf = AL.buffers[bufferId];
+        if (!buf || bufferId === 0) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return;
+        }
+  
+        switch (param) {
+        case 0x2001 /* AL_FREQUENCY */:
+          return buf.frequency;
+        case 0x2002 /* AL_BITS */:
+          return buf.bytesPerSample * 8;
+        case 0x2003 /* AL_CHANNELS */:
+          return buf.channels;
+        case 0x2004 /* AL_SIZE */:
+          return buf.length * buf.bytesPerSample * buf.channels;
+        case 0x2015 /* AL_LOOP_POINTS_SOFT */:
+          if (buf.length === 0) {
+            return [0, 0];
+          } else {
+            return [
+              (buf.audioBuf._loopStart || 0.0) * buf.frequency,
+              (buf.audioBuf._loopEnd || buf.length) * buf.frequency
+            ];
+          }
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return null;
+        }
+      },setBufferParam:function (funcname, bufferId, param, value) {
+        if (!AL.currentCtx) {
+          return;
+        }
+        var buf = AL.buffers[bufferId];
+        if (!buf || bufferId === 0) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return;
+        }
+        if (value === null) {
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+  
+        switch (param) {
+        case 0x2004 /* AL_SIZE */:
+          if (value !== 0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          // Per the spec, setting AL_SIZE to 0 is a legal NOP.
+          break;
+        case 0x2015 /* AL_LOOP_POINTS_SOFT */:
+          if (value[0] < 0 || value[0] > buf.length || value[1] < 0 || value[1] > buf.Length || value[0] >= value[1]) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          if (buf.refCount > 0) {
+            AL.currentCtx.err = 0xA004 /* AL_INVALID_OPERATION */;
+            return;
+          }
+  
+          if (buf.audioBuf) {
+            buf.audioBuf._loopStart = value[0] / buf.frequency;
+            buf.audioBuf._loopEnd = value[1] / buf.frequency;
+          }
+          break;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+      },getSourceParam:function (funcname, sourceId, param) {
+        if (!AL.currentCtx) {
+          return null;
+        }
+        var src = AL.currentCtx.sources[sourceId];
+        if (!src) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return null;
+        }
+  
+        switch (param) {
+        case 0x202 /* AL_SOURCE_RELATIVE */:
+          return src.relative;
+        case 0x1001 /* AL_CONE_INNER_ANGLE */:
+          return src.coneInnerAngle;
+        case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+          return src.coneOuterAngle;
+        case 0x1003 /* AL_PITCH */:
+          return src.pitch;
+        case 0x1004 /* AL_POSITION */:
+          return src.position;
+        case 0x1005 /* AL_DIRECTION */:
+          return src.direction;
+        case 0x1006 /* AL_VELOCITY */:
+          return src.velocity;
+        case 0x1007 /* AL_LOOPING */:
+          return src.looping;
+        case 0x1009 /* AL_BUFFER */:
+          if (src.type === 0x1028 /* AL_STATIC */) {
+            return src.bufQueue[0].id;
+          } else {
+            return 0;
+          }
+        case 0x100A /* AL_GAIN */:
+          return src.gain.gain.value;
+         case 0x100D /* AL_MIN_GAIN */:
+          return src.minGain;
+        case 0x100E /* AL_MAX_GAIN */:
+          return src.maxGain;
+        case 0x1010 /* AL_SOURCE_STATE */:
+          return src.state;
+        case 0x1015 /* AL_BUFFERS_QUEUED */:
+          if (src.bufQueue.length === 1 && src.bufQueue[0].id === 0) {
+            return 0;
+          } else {
+            return src.bufQueue.length;
+          }
+        case 0x1016 /* AL_BUFFERS_PROCESSED */:
+          if ((src.bufQueue.length === 1 && src.bufQueue[0].id === 0) || src.looping) {
+            return 0;
+          } else {
+            return src.bufsProcessed;
+          }
+        case 0x1020 /* AL_REFERENCE_DISTANCE */:
+          return src.refDistance;
+        case 0x1021 /* AL_ROLLOFF_FACTOR */:
+          return src.rolloffFactor;
+        case 0x1022 /* AL_CONE_OUTER_GAIN */:
+          return src.coneOuterGain;
+        case 0x1023 /* AL_MAX_DISTANCE */:
+          return src.maxDistance;
+        case 0x1024 /* AL_SEC_OFFSET */:
+          return AL.sourceTell(src);
+        case 0x1025 /* AL_SAMPLE_OFFSET */:
+          var offset = AL.sourceTell(src);
+          if (offset > 0.0) {
+            offset *= src.bufQueue[0].frequency;
+          }
+          return offset;
+        case 0x1026 /* AL_BYTE_OFFSET */:
+          var offset = AL.sourceTell(src);
+          if (offset > 0.0) {
+            offset *= src.bufQueue[0].frequency * src.bufQueue[0].bytesPerSample;
+          }
+          return offset;
+        case 0x1027 /* AL_SOURCE_TYPE */:
+          return src.type;
+        case 0x1214 /* AL_SOURCE_SPATIALIZE_SOFT */:
+          return src.spatialize;
+        case 0x2009 /* AL_BYTE_LENGTH_SOFT */: 
+          var length = 0;
+          var bytesPerFrame = 0;
+          for (var i = 0; i < src.bufQueue.length; i++) {
+            length += src.bufQueue[i].length;
+            if (src.bufQueue[i].id !== 0) {
+              bytesPerFrame = src.bufQueue[i].bytesPerSample * src.bufQueue[i].channels;
+            }
+          }
+          return length * bytesPerFrame;
+        case 0x200A /* AL_SAMPLE_LENGTH_SOFT */:
+          var length = 0;
+          for (var i = 0; i < src.bufQueue.length; i++) {
+            length += src.bufQueue[i].length;
+          }
+          return length;
+        case 0x200B /* AL_SEC_LENGTH_SOFT */:
+          return AL.sourceDuration(src);
+        case 0xD000 /* AL_DISTANCE_MODEL */:
+          return src.distanceModel;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return null;
+        }
+      },setSourceParam:function (funcname, sourceId, param, value) {
+        if (!AL.currentCtx) {
+          return;
+        }
+        var src = AL.currentCtx.sources[sourceId];
+        if (!src) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return;
+        }
+        if (value === null) {
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+  
+        switch (param) {
+        case 0x202 /* AL_SOURCE_RELATIVE */:
+          if (value === 1 /* AL_TRUE */) {
+            src.relative = true;
+            AL.updateSourceSpace(src);
+          } else if (value === 0 /* AL_FALSE */) {
+            src.relative = false;
+            AL.updateSourceSpace(src);
+          } else {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          break;
+        case 0x1001 /* AL_CONE_INNER_ANGLE */:
+          if (!Number.isFinite(value)) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.coneInnerAngle = value;
+          if (src.panner) {
+            src.panner.coneInnerAngle = value % 360.0;
+          }
+          break;
+        case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+          if (!Number.isFinite(value)) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.coneOuterAngle = value;
+          if (src.panner) {
+            src.panner.coneOuterAngle = value % 360.0;
+          }
+          break;
+        case 0x1003 /* AL_PITCH */:
+          if (!Number.isFinite(value) || value <= 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          if (src.pitch === value) {
+            break;
+          }
+  
+          src.pitch = value;
+          AL.updateSourceRate(src);
+          break;
+        case 0x1004 /* AL_POSITION */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.position[0] = value[0];
+          src.position[1] = value[1];
+          src.position[2] = value[2];
+          AL.updateSourceSpace(src);
+          break;
+        case 0x1005 /* AL_DIRECTION */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.direction[0] = value[0];
+          src.direction[1] = value[1];
+          src.direction[2] = value[2];
+          AL.updateSourceSpace(src);
+          break;
+        case 0x1006 /* AL_VELOCITY */:
+          if (!Number.isFinite(value[0]) || !Number.isFinite(value[1]) || !Number.isFinite(value[2])) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.velocity[0] = value[0];
+          src.velocity[1] = value[1];
+          src.velocity[2] = value[2];
+          AL.updateSourceSpace(src);
+          break;
+        case 0x1007 /* AL_LOOPING */:
+          if (value === 1 /* AL_TRUE */) {
+            src.looping = true;
+            AL.updateSourceTime(src);
+            if (src.type === 0x1028 /* AL_STATIC */ && src.audioQueue.length > 0) {
+              var audioSrc  = src.audioQueue[0];
+              audioSrc.loop = true;
+              audioSrc._duration = Number.POSITIVE_INFINITY;
+            }
+          } else if (value === 0 /* AL_FALSE */) {
+            src.looping = false;
+            var currentTime = AL.updateSourceTime(src);
+            if (src.type === 0x1028 /* AL_STATIC */ && src.audioQueue.length > 0) {
+              var audioSrc  = src.audioQueue[0];
+              audioSrc.loop = false;
+              audioSrc._duration = src.bufQueue[0].audioBuf.duration / src.playbackRate;
+              audioSrc._startTime = currentTime - src.bufOffset / src.playbackRate;
+            }
+          } else {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          break;
+        case 0x1009 /* AL_BUFFER */:
+          if (src.state === 0x1012 /* AL_PLAYING */ || src.state === 0x1013 /* AL_PAUSED */) {
+            AL.currentCtx.err = 0xA004 /* AL_INVALID_OPERATION */;
+            return;
+          }
+  
+          if (value === 0) {
+            for (var i in src.bufQueue) {
+              src.bufQueue[i].refCount--;
+            }
+            src.bufQueue.length = 1;
+            src.bufQueue[0] = AL.buffers[0];
+  
+            src.bufsProcessed = 0;
+            src.type = 0x1030 /* AL_UNDETERMINED */;
+          } else {
+            var buf = AL.buffers[value];
+            if (!buf) {
+              AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+              return;
+            }
+  
+            for (var i in src.bufQueue) {
+              src.bufQueue[i].refCount--;
+            }
+            src.bufQueue.length = 0;
+  
+            buf.refCount++;
+            src.bufQueue = [buf];
+            src.bufsProcessed = 0;
+            src.type = 0x1028 /* AL_STATIC */;
+          }
+  
+          AL.initSourcePanner(src);
+          AL.scheduleSourceAudio(src);
+          break;
+        case 0x100A /* AL_GAIN */:
+          if (!Number.isFinite(value) || value < 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.gain.gain.value = value;
+          break;
+        case 0x100D /* AL_MIN_GAIN */:
+          if (!Number.isFinite(value) || value < 0.0 || value > Math.min(src.maxGain, 1.0)) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.minGain = value;
+          break;
+        case 0x100E /* AL_MAX_GAIN */:
+          if (!Number.isFinite(value) || value < Math.max(0.0, src.minGain) || value > 1.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.maxGain = value;
+          break;
+        case 0x1020 /* AL_REFERENCE_DISTANCE */:
+          if (!Number.isFinite(value) || value < 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.refDistance = value;
+          if (src.panner) {
+            src.panner.refDistance = value;
+          }
+          break;
+        case 0x1021 /* AL_ROLLOFF_FACTOR */:
+          if (!Number.isFinite(value) || value < 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.rolloffFactor = value;
+          if (src.panner) {
+            src.panner.rolloffFactor = value;
+          }
+          break;
+        case 0x1022 /* AL_CONE_OUTER_GAIN */:
+          if (!Number.isFinite(value) || value < 0.0 || value > 1.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.coneOuterGain = value;
+          if (src.panner) {
+            src.panner.coneOuterGain = value;
+          }
+          break;
+        case 0x1023 /* AL_MAX_DISTANCE */:
+          if (!Number.isFinite(value) || value < 0.0) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          src.maxDistance = value;
+          if (src.panner) {
+            src.panner.maxDistance = value;
+          }
+          break;
+        case 0x1024 /* AL_SEC_OFFSET */:
+          if (value < 0.0 || value > AL.sourceDuration(src)) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.sourceSeek(src, value);
+          break;
+        case 0x1025 /* AL_SAMPLE_OFFSET */:
+          var srcLen = AL.sourceDuration(src);
+          if (srcLen > 0.0) {
+            var frequency;
+            for (var bufId in src.bufQueue) {
+              if (bufId !== 0) {
+                frequency = src.bufQueue[bufId].frequency;
+                break;
+              }
+            }
+            value /= frequency;
+          }
+          if (value < 0.0 || value > srcLen) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.sourceSeek(src, value);
+          break;
+        case 0x1026 /* AL_BYTE_OFFSET */:
+          var srcLen = AL.sourceDuration(src);
+          if (srcLen > 0.0) {
+            var bytesPerSec;
+            for (var bufId in src.bufQueue) {
+              if (bufId !== 0) {
+                var buf = src.bufQueue[bufId];
+                bytesPerSec = buf.frequency * buf.bytesPerSample * buf.channels;
+                break;
+              }
+            }
+            value /= bytesPerSec;
+          }
+          if (value < 0.0 || value > srcLen) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          AL.sourceSeek(src, value);
+          break;
+        case 0x1214 /* AL_SOURCE_SPATIALIZE_SOFT */:
+          if (value !== 0 /* AL_FALSE */ && value !== 1 /* AL_TRUE */ && value !== 2 /* AL_AUTO_SOFT */) {
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+  
+          src.spatialize = value;
+          AL.initSourcePanner(src);
+          break;
+        case 0x2009 /* AL_BYTE_LENGTH_SOFT */: 
+        case 0x200A /* AL_SAMPLE_LENGTH_SOFT */:
+        case 0x200B /* AL_SEC_LENGTH_SOFT */:
+          AL.currentCtx.err = 0xA004 /* AL_INVALID_OPERATION */;
+          break;
+        case 0xD000 /* AL_DISTANCE_MODEL */:
+          switch (value) {
+          case 0 /* AL_NONE */:
+          case 0xd001 /* AL_INVERSE_DISTANCE */:
+          case 0xd002 /* AL_INVERSE_DISTANCE_CLAMPED */:
+          case 0xd003 /* AL_LINEAR_DISTANCE */:
+          case 0xd004 /* AL_LINEAR_DISTANCE_CLAMPED */:
+          case 0xd005 /* AL_EXPONENT_DISTANCE */:
+          case 0xd006 /* AL_EXPONENT_DISTANCE_CLAMPED */:
+            src.distanceModel = value;
+            if (AL.currentCtx.sourceDistanceModel) {
+              AL.updateContextGlobal(AL.currentCtx);
+            }
+            break;
+          default:
+            AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+            return;
+          }
+          break;
+        default:
+          AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+          return;
+        }
+      },captures:{},sharedCaptureAudioCtx:null,requireValidCaptureDevice:function (deviceId, funcname) {
+        if (deviceId === 0) {
+          AL.alcErr = 0xA001 /* ALC_INVALID_DEVICE */;
+          return null;
+        }
+        var c = AL.captures[deviceId];
+        if (!c) {
+          AL.alcErr = 0xA001 /* ALC_INVALID_DEVICE */;
+          return null;
+        }
+        var err = c.mediaStreamError;
+        if (err) {
+          AL.alcErr = 0xA001 /* ALC_INVALID_DEVICE */;
+          return null;
+        }
+        return c;
+      }};function _alBufferData(bufferId, format, pData, size, freq) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      var buf = AL.buffers[bufferId];
+      if (!buf) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return;
+      }
+      if (freq <= 0) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return;
+      }
+  
+      var audioBuf = null;
+      try {
+        switch (format) {
+        case 0x1100 /* AL_FORMAT_MONO8 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(1, size, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            for (var i = 0; i < size; ++i) {
+              channel0[i] = HEAPU8[pData++] * 0.0078125 /* 1/128 */ - 1.0;
+            }
+          }
+          buf.bytesPerSample = 1;
+          buf.channels = 1;
+          buf.length = size;
+          break;
+        case 0x1101 /* AL_FORMAT_MONO16 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(1, size >> 1, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            pData >>= 1;
+            for (var i = 0; i < size >> 1; ++i) {
+              channel0[i] = HEAP16[pData++] * 0.000030517578125 /* 1/32768 */;
+            }
+          }
+          buf.bytesPerSample = 2;
+          buf.channels = 1;
+          buf.length = size >> 1;
+          break;
+        case 0x1102 /* AL_FORMAT_STEREO8 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(2, size >> 1, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            var channel1 = audioBuf.getChannelData(1);
+            for (var i = 0; i < size >> 1; ++i) {
+              channel0[i] = HEAPU8[pData++] * 0.0078125 /* 1/128 */ - 1.0;
+              channel1[i] = HEAPU8[pData++] * 0.0078125 /* 1/128 */ - 1.0;
+            }
+          }
+          buf.bytesPerSample = 1;
+          buf.channels = 2;
+          buf.length = size >> 1;
+          break;
+        case 0x1103 /* AL_FORMAT_STEREO16 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(2, size >> 2, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            var channel1 = audioBuf.getChannelData(1);
+            pData >>= 1;
+            for (var i = 0; i < size >> 2; ++i) {
+              channel0[i] = HEAP16[pData++] * 0.000030517578125 /* 1/32768 */;
+              channel1[i] = HEAP16[pData++] * 0.000030517578125 /* 1/32768 */;
+            }
+          }
+          buf.bytesPerSample = 2;
+          buf.channels = 2;
+          buf.length = size >> 2;
+          break;
+        case 0x10010 /* AL_FORMAT_MONO_FLOAT32 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(1, size >> 2, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            pData >>= 2;
+            for (var i = 0; i < size >> 2; ++i) {
+              channel0[i] = HEAPF32[pData++];
+            }
+          }
+          buf.bytesPerSample = 4;
+          buf.channels = 1;
+          buf.length = size >> 2;
+          break;
+        case 0x10011 /* AL_FORMAT_STEREO_FLOAT32 */:
+          if (size > 0) {
+            audioBuf = AL.currentCtx.audioCtx.createBuffer(2, size >> 3, freq);
+            var channel0 = audioBuf.getChannelData(0);
+            var channel1 = audioBuf.getChannelData(1);
+            pData >>= 2;
+            for (var i = 0; i < size >> 3; ++i) {
+              channel0[i] = HEAPF32[pData++];
+              channel1[i] = HEAPF32[pData++];
+            }
+          }
+          buf.bytesPerSample = 4;
+          buf.channels = 2;
+          buf.length = size >> 3;
+          break;
+        default:
+          AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+          return;
+        }
+        buf.frequency = freq;
+        buf.audioBuf = audioBuf;
+      } catch (e) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return;
+      }
+    }
+
+  function _alDeleteBuffers(count, pBufferIds) {
+      if (!AL.currentCtx) {
+        return;
+      }
+  
+      for (var i = 0; i < count; ++i) {
+        var bufId = HEAP32[(((pBufferIds)+(i*4))>>2)];
+        /// Deleting the zero buffer is a legal NOP, so ignore it
+        if (bufId === 0) {
+          continue;
+        }
+  
+        // Make sure the buffer index is valid.
+        if (!AL.buffers[bufId]) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return;
+        }
+  
+        // Make sure the buffer is no longer in use.
+        if (AL.buffers[bufId].refCount) {
+          AL.currentCtx.err = 0xA004 /* AL_INVALID_OPERATION */;
+          return;
+        }
+      }
+  
+      for (var i = 0; i < count; ++i) {
+        var bufId = HEAP32[(((pBufferIds)+(i*4))>>2)];
+        if (bufId === 0) {
+          continue;
+        }
+  
+        AL.deviceRefCounts[AL.buffers[bufId].deviceId]--;
+        delete AL.buffers[bufId];
+        AL.freeIds.push(bufId);
+      }
+    }
+
+  
+  function _alSourcei(sourceId, param, value) {
+      switch (param) {
+      case 0x202 /* AL_SOURCE_RELATIVE */:
+      case 0x1001 /* AL_CONE_INNER_ANGLE */:
+      case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+      case 0x1007 /* AL_LOOPING */:
+      case 0x1009 /* AL_BUFFER */:
+      case 0x1020 /* AL_REFERENCE_DISTANCE */:
+      case 0x1021 /* AL_ROLLOFF_FACTOR */:
+      case 0x1023 /* AL_MAX_DISTANCE */:
+      case 0x1024 /* AL_SEC_OFFSET */:
+      case 0x1025 /* AL_SAMPLE_OFFSET */:
+      case 0x1026 /* AL_BYTE_OFFSET */:
+      case 0x1214 /* AL_SOURCE_SPATIALIZE_SOFT */:
+      case 0x2009 /* AL_BYTE_LENGTH_SOFT */: 
+      case 0x200A /* AL_SAMPLE_LENGTH_SOFT */:
+      case 0xD000 /* AL_DISTANCE_MODEL */:
+        AL.setSourceParam('alSourcei', sourceId, param, value);
+        break;
+      default:
+        AL.setSourceParam('alSourcei', sourceId, param, null);
+        break;
+      }
+    }function _alDeleteSources(count, pSourceIds) {
+      if (!AL.currentCtx) {
+        return;
+      }
+  
+      for (var i = 0; i < count; ++i) {
+        var srcId = HEAP32[(((pSourceIds)+(i*4))>>2)];
+        if (!AL.currentCtx.sources[srcId]) {
+          AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+          return;
+        }
+      }
+  
+      for (var i = 0; i < count; ++i) {
+        var srcId = HEAP32[(((pSourceIds)+(i*4))>>2)];
+        AL.setSourceState(AL.currentCtx.sources[srcId], 0x1014 /* AL_STOPPED */);
+        _alSourcei(srcId, 0x1009 /* AL_BUFFER */, 0);
+        delete AL.currentCtx.sources[srcId];
+        AL.freeIds.push(srcId);
+      }
+    }
+
+  function _alGenBuffers(count, pBufferIds) {
+      if (!AL.currentCtx) {
+        return;
+      }
+  
+      for (var i = 0; i < count; ++i) {
+        var buf = {
+          deviceId: AL.currentCtx.deviceId,
+          id: AL.newId(),
+          refCount: 0,
+          audioBuf: null,
+          frequency: 0,
+          bytesPerSample: 2,
+          channels: 1,
+          length: 0,
+        };
+        AL.deviceRefCounts[buf.deviceId]++;
+        AL.buffers[buf.id] = buf;
+        HEAP32[(((pBufferIds)+(i*4))>>2)]=buf.id;
+      }
+    }
+
+  function _alGenSources(count, pSourceIds) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      for (var i = 0; i < count; ++i) {
+        var gain = AL.currentCtx.audioCtx.createGain();
+        gain.connect(AL.currentCtx.gain);
+        var src = {
+          context: AL.currentCtx,
+          id: AL.newId(),
+          type: 0x1030 /* AL_UNDETERMINED */,
+          state: 0x1011 /* AL_INITIAL */,
+          bufQueue: [AL.buffers[0]],
+          audioQueue: [],
+          looping: false,
+          pitch: 1.0,
+          dopplerShift: 1.0,
+          gain: gain,
+          minGain: 0.0,
+          maxGain: 1.0,
+          panner: null,
+          bufsProcessed: 0,
+          bufStartTime: Number.NEGATIVE_INFINITY,
+          bufOffset: 0.0,
+          relative: false,
+          refDistance: 1.0,
+          maxDistance: 3.40282e38 /* FLT_MAX */,
+          rolloffFactor: 1.0,
+          position: [0.0, 0.0, 0.0],
+          velocity: [0.0, 0.0, 0.0],
+          direction: [0.0, 0.0, 0.0],
+          coneOuterGain: 0.0,
+          coneInnerAngle: 360.0,
+          coneOuterAngle: 360.0,
+          distanceModel: 0xd002 /* AL_INVERSE_DISTANCE_CLAMPED */,
+          spatialize: 2 /* AL_AUTO_SOFT */,
+  
+          get playbackRate() {
+            return this.pitch * this.dopplerShift;
+          }
+        };
+        AL.currentCtx.sources[src.id] = src;
+        HEAP32[(((pSourceIds)+(i*4))>>2)]=src.id;
+      }
+    }
+
+  function _alGetEnumValue(pEnumName) {
+      if (!AL.currentCtx) {
+        return 0;
+      }
+  
+      if (!pEnumName) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return 0 /* AL_NONE */;
+      }
+      name = UTF8ToString(pEnumName);
+  
+      switch(name) {
+      // Spec doesn't clearly state that alGetEnumValue() is required to
+      // support _only_ extension tokens.
+      // We should probably follow OpenAL-Soft's example and support all
+      // of the names we know.
+      // See http://repo.or.cz/openal-soft.git/blob/HEAD:/Alc/ALc.c
+      case 'AL_BITS': return 0x2002;
+      case 'AL_BUFFER': return 0x1009;
+      case 'AL_BUFFERS_PROCESSED': return 0x1016;
+      case 'AL_BUFFERS_QUEUED': return 0x1015;
+      case 'AL_BYTE_OFFSET': return 0x1026;
+      case 'AL_CHANNELS': return 0x2003;
+      case 'AL_CONE_INNER_ANGLE': return 0x1001;
+      case 'AL_CONE_OUTER_ANGLE': return 0x1002;
+      case 'AL_CONE_OUTER_GAIN': return 0x1022;
+      case 'AL_DIRECTION': return 0x1005;
+      case 'AL_DISTANCE_MODEL': return 0xD000;
+      case 'AL_DOPPLER_FACTOR': return 0xC000;
+      case 'AL_DOPPLER_VELOCITY': return 0xC001;
+      case 'AL_EXPONENT_DISTANCE': return 0xD005;
+      case 'AL_EXPONENT_DISTANCE_CLAMPED': return 0xD006;
+      case 'AL_EXTENSIONS': return 0xB004;
+      case 'AL_FORMAT_MONO16': return 0x1101;
+      case 'AL_FORMAT_MONO8': return 0x1100;
+      case 'AL_FORMAT_STEREO16': return 0x1103;
+      case 'AL_FORMAT_STEREO8': return 0x1102;
+      case 'AL_FREQUENCY': return 0x2001;
+      case 'AL_GAIN': return 0x100A;
+      case 'AL_INITIAL': return 0x1011;
+      case 'AL_INVALID': return -1;
+      case 'AL_ILLEGAL_ENUM': // fallthrough
+      case 'AL_INVALID_ENUM': return 0xA002;
+      case 'AL_INVALID_NAME': return 0xA001;
+      case 'AL_ILLEGAL_COMMAND': // fallthrough
+      case 'AL_INVALID_OPERATION': return 0xA004;
+      case 'AL_INVALID_VALUE': return 0xA003;
+      case 'AL_INVERSE_DISTANCE': return 0xD001;
+      case 'AL_INVERSE_DISTANCE_CLAMPED': return 0xD002;
+      case 'AL_LINEAR_DISTANCE': return 0xD003;
+      case 'AL_LINEAR_DISTANCE_CLAMPED': return 0xD004;
+      case 'AL_LOOPING': return 0x1007;
+      case 'AL_MAX_DISTANCE': return 0x1023;
+      case 'AL_MAX_GAIN': return 0x100E;
+      case 'AL_MIN_GAIN': return 0x100D;
+      case 'AL_NONE': return 0;
+      case 'AL_NO_ERROR': return 0;
+      case 'AL_ORIENTATION': return 0x100F;
+      case 'AL_OUT_OF_MEMORY': return 0xA005;
+      case 'AL_PAUSED': return 0x1013;
+      case 'AL_PENDING': return 0x2011;
+      case 'AL_PITCH': return 0x1003;
+      case 'AL_PLAYING': return 0x1012;
+      case 'AL_POSITION': return 0x1004;
+      case 'AL_PROCESSED': return 0x2012;
+      case 'AL_REFERENCE_DISTANCE': return 0x1020;
+      case 'AL_RENDERER': return 0xB003;
+      case 'AL_ROLLOFF_FACTOR': return 0x1021;
+      case 'AL_SAMPLE_OFFSET': return 0x1025;
+      case 'AL_SEC_OFFSET': return 0x1024;
+      case 'AL_SIZE': return 0x2004;
+      case 'AL_SOURCE_RELATIVE': return 0x202;
+      case 'AL_SOURCE_STATE': return 0x1010;
+      case 'AL_SOURCE_TYPE': return 0x1027;
+      case 'AL_SPEED_OF_SOUND': return 0xC003;
+      case 'AL_STATIC': return 0x1028;
+      case 'AL_STOPPED': return 0x1014;
+      case 'AL_STREAMING': return 0x1029;
+      case 'AL_UNDETERMINED': return 0x1030;
+      case 'AL_UNUSED': return 0x2010;
+      case 'AL_VELOCITY': return 0x1006;
+      case 'AL_VENDOR': return 0xB001;
+      case 'AL_VERSION': return 0xB002;
+  
+      /* Extensions */
+      case 'AL_AUTO_SOFT': return 0x0002;
+      case 'AL_SOURCE_DISTANCE_MODEL': return 0x200;
+      case 'AL_SOURCE_SPATIALIZE_SOFT': return 0x1214;
+      case 'AL_LOOP_POINTS_SOFT': return 0x2015;
+      case 'AL_BYTE_LENGTH_SOFT': return 0x2009;
+      case 'AL_SAMPLE_LENGTH_SOFT': return 0x200A;
+      case 'AL_SEC_LENGTH_SOFT': return 0x200B;
+      case 'AL_FORMAT_MONO_FLOAT32': return 0x10010;
+      case 'AL_FORMAT_STEREO_FLOAT32': return 0x10011;
+  
+      default:
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return 0;
+      }
+    }
+
+  function _alGetError() {
+      if (!AL.currentCtx) {
+        return 0xA004 /* AL_INVALID_OPERATION */;
+      } else {
+        // Reset error on get.
+        var err = AL.currentCtx.err;
+        AL.currentCtx.err = 0 /* AL_NO_ERROR */;
+        return err;
+      }
+    }
+
+  function _alGetSourcei(sourceId, param, pValue) {
+      var val = AL.getSourceParam('alGetSourcei', sourceId, param);
+      if (val === null) {
+        return;
+      }
+      if (!pValue) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return;
+      }
+  
+      switch (param) {
+      case 0x202 /* AL_SOURCE_RELATIVE */:
+      case 0x1001 /* AL_CONE_INNER_ANGLE */:
+      case 0x1002 /* AL_CONE_OUTER_ANGLE */:
+      case 0x1007 /* AL_LOOPING */:
+      case 0x1009 /* AL_BUFFER */:
+      case 0x1010 /* AL_SOURCE_STATE */:
+      case 0x1015 /* AL_BUFFERS_QUEUED */:
+      case 0x1016 /* AL_BUFFERS_PROCESSED */:
+      case 0x1020 /* AL_REFERENCE_DISTANCE */:
+      case 0x1021 /* AL_ROLLOFF_FACTOR */:
+      case 0x1023 /* AL_MAX_DISTANCE */:
+      case 0x1024 /* AL_SEC_OFFSET */:
+      case 0x1025 /* AL_SAMPLE_OFFSET */:
+      case 0x1026 /* AL_BYTE_OFFSET */:
+      case 0x1027 /* AL_SOURCE_TYPE */:
+      case 0x1214 /* AL_SOURCE_SPATIALIZE_SOFT */:
+      case 0x2009 /* AL_BYTE_LENGTH_SOFT */: 
+      case 0x200A /* AL_SAMPLE_LENGTH_SOFT */:
+      case 0xD000 /* AL_DISTANCE_MODEL */:
+        HEAP32[((pValue)>>2)]=val;
+        break;
+      default:
+        AL.currentCtx.err = 0xA002 /* AL_INVALID_ENUM */;
+        return;
+      }
+    }
+
+  function _alListener3f(param, value0, value1, value2) {
+      switch (param) {
+      case 0x1004 /* AL_POSITION */:
+      case 0x1006 /* AL_VELOCITY */:
+        AL.paramArray[0] = value0;
+        AL.paramArray[1] = value1;
+        AL.paramArray[2] = value2;
+        AL.setListenerParam('alListener3f', param, AL.paramArray);
+        break;
+      default:
+        AL.setListenerParam('alListener3f', param, null);
+        break;
+      }
+    }
+
+  function _alListenerf(param, value) {
+      switch (param) {
+      case 0x100A /* AL_GAIN */:
+        AL.setListenerParam('alListenerf', param, value);
+        break;
+      default:
+        AL.setListenerParam('alListenerf', param, null);
+        break;
+      }
+    }
+
+  function _alListenerfv(param, pValues) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      if (!pValues) {
+        AL.currentCtx.err = 0xA003 /* AL_INVALID_VALUE */;
+        return;
+      }
+  
+      switch (param) {
+      case 0x1004 /* AL_POSITION */:
+      case 0x1006 /* AL_VELOCITY */:
+        AL.paramArray[0] = HEAPF32[((pValues)>>2)];
+        AL.paramArray[1] = HEAPF32[(((pValues)+(4))>>2)];
+        AL.paramArray[2] = HEAPF32[(((pValues)+(8))>>2)];
+        AL.setListenerParam('alListenerfv', param, AL.paramArray);
+        break;
+      case 0x100F /* AL_ORIENTATION */:
+        AL.paramArray[0] = HEAPF32[((pValues)>>2)];
+        AL.paramArray[1] = HEAPF32[(((pValues)+(4))>>2)];
+        AL.paramArray[2] = HEAPF32[(((pValues)+(8))>>2)];
+        AL.paramArray[3] = HEAPF32[(((pValues)+(12))>>2)];
+        AL.paramArray[4] = HEAPF32[(((pValues)+(16))>>2)];
+        AL.paramArray[5] = HEAPF32[(((pValues)+(20))>>2)];
+        AL.setListenerParam('alListenerfv', param, AL.paramArray);
+        break;
+      default:
+        AL.setListenerParam('alListenerfv', param, null);
+        break;
+      }
+    }
+
+  function _alSourcePause(sourceId) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      var src = AL.currentCtx.sources[sourceId];
+      if (!src) {
+        AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+        return;
+      }
+      AL.setSourceState(src, 0x1013 /* AL_PAUSED */);
+    }
+
+  function _alSourcePlay(sourceId) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      var src = AL.currentCtx.sources[sourceId];
+      if (!src) {
+        AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+        return;
+      }
+      AL.setSourceState(src, 0x1012 /* AL_PLAYING */);
+    }
+
+  function _alSourceStop(sourceId) {
+      if (!AL.currentCtx) {
+        return;
+      }
+      var src = AL.currentCtx.sources[sourceId];
+      if (!src) {
+        AL.currentCtx.err = 0xA001 /* AL_INVALID_NAME */;
+        return;
+      }
+      AL.setSourceState(src, 0x1014 /* AL_STOPPED */);
+    }
+
+
+  function _alcCloseDevice(deviceId) {
+      if (!(deviceId in AL.deviceRefCounts) || AL.deviceRefCounts[deviceId] > 0) {
+        return 0 /* ALC_FALSE */;
+      }
+  
+      delete AL.deviceRefCounts[deviceId];
+      AL.freeIds.push(deviceId);
+      return 1 /* ALC_TRUE */;
+    }
+
+  function _alcCreateContext(deviceId, pAttrList) {
+      if (!(deviceId in AL.deviceRefCounts)) {
+        AL.alcErr = 0xA001; /* ALC_INVALID_DEVICE */
+        return 0;
+      }
+  
+      var options = null;
+      var attrs = [];
+      var hrtf = null;
+      pAttrList >>= 2;
+      if (pAttrList) {
+        var attr = 0;
+        var val = 0;
+        while (true) {
+          attr = HEAP32[pAttrList++];
+          attrs.push(attr);
+          if (attr === 0) {
+            break;
+          }
+          val = HEAP32[pAttrList++];
+          attrs.push(val);
+  
+          switch (attr) {
+          case 0x1007 /* ALC_FREQUENCY */:
+            if (!options) {
+              options = {};
+            }
+  
+            options.sampleRate = val;
+            break;
+          case 0x1010 /* ALC_MONO_SOURCES */: // fallthrough
+          case 0x1011 /* ALC_STEREO_SOURCES */:
+            // Do nothing; these hints are satisfied by default
+            break
+          case 0x1992 /* ALC_HRTF_SOFT */:
+            switch (val) {
+              case 0 /* ALC_FALSE */:
+                hrtf = false;
+                break;
+              case 1 /* ALC_TRUE */:
+                hrtf = true;
+                break;
+              case 2 /* ALC_DONT_CARE_SOFT */:
+                break;
+              default:
+                AL.alcErr = 0xA004 /* ALC_INVALID_VALUE */;
+                return 0;
+            }
+            break;
+          case 0x1996 /* ALC_HRTF_ID_SOFT */:
+            if (val !== 0) {
+              AL.alcErr = 0xA004 /* ALC_INVALID_VALUE */;
+              return 0;
+            }
+            break;
+          default:
+            AL.alcErr = 0xA004; /* ALC_INVALID_VALUE */
+            return 0;
+          }
+        }
+      }
+  
+      var AudioContext = window.AudioContext || window.webkitAudioContext;
+      var ac = null;
+      try {
+        // Only try to pass options if there are any, for compat with browsers that don't support this
+        if (options) {
+          ac = new AudioContext(options);
+        } else {
+          ac = new AudioContext();
+        }
+      } catch (e) {
+        if (e.name === 'NotSupportedError') {
+          AL.alcErr = 0xA004; /* ALC_INVALID_VALUE */
+        } else {
+          AL.alcErr = 0xA001; /* ALC_INVALID_DEVICE */
+        }
+  
+        return 0;
+      }
+  
+      // Old Web Audio API (e.g. Safari 6.0.5) had an inconsistently named createGainNode function.
+      if (typeof(ac.createGain) === 'undefined') {
+        ac.createGain = ac.createGainNode;
+      }
+  
+      var gain = ac.createGain();
+      gain.connect(ac.destination);
+      var ctx = {
+        deviceId: deviceId,
+        id: AL.newId(),
+        attrs: attrs,
+        audioCtx: ac,
+        listener: {
+      	  position: [0.0, 0.0, 0.0],
+      	  velocity: [0.0, 0.0, 0.0],
+      	  direction: [0.0, 0.0, 0.0],
+      	  up: [0.0, 0.0, 0.0]
+        },
+        sources: [],
+        interval: setInterval(function() { AL.scheduleContextAudio(ctx); }, AL.QUEUE_INTERVAL),
+        gain: gain,
+        distanceModel: 0xd002 /* AL_INVERSE_DISTANCE_CLAMPED */,
+        speedOfSound: 343.3,
+        dopplerFactor: 1.0,
+        sourceDistanceModel: false,
+        hrtf: hrtf || false,
+  
+        _err: 0,
+        get err() {
+          return this._err;
+        },
+        set err(val) {
+          // Errors should not be overwritten by later errors until they are cleared by a query.
+          if (this._err === 0 /* AL_NO_ERROR */ || val === 0 /* AL_NO_ERROR */) {
+            this._err = val;
+          }
+        }
+      };
+      AL.deviceRefCounts[deviceId]++;
+      AL.contexts[ctx.id] = ctx;
+  
+      if (hrtf !== null) {
+        // Apply hrtf attrib to all contexts for this device
+        for (var ctxId in AL.contexts) {
+          var c = AL.contexts[ctxId];
+          if (c.deviceId === deviceId) {
+            c.hrtf = hrtf;
+            AL.updateContextGlobal(c);
+          }
+        }
+      }
+  
+      return ctx.id;
+    }
+
+  function _alcDestroyContext(contextId) {
+      var ctx = AL.contexts[contextId];
+      if (AL.currentCtx === ctx) {
+        AL.alcErr = 0xA002 /* ALC_INVALID_CONTEXT */;
+        return;
+      }
+  
+      // Stop playback, etc
+      if (AL.contexts[contextId].interval) {
+        clearInterval(AL.contexts[contextId].interval);
+      }
+      AL.deviceRefCounts[ctx.deviceId]--;
+      delete AL.contexts[contextId];
+      AL.freeIds.push(contextId);
+    }
+
+  function _alcMakeContextCurrent(contextId) {
+      if (contextId === 0) {
+        AL.currentCtx = null;
+        return 0;
+      } else {
+        AL.currentCtx = AL.contexts[contextId];
+        return 1;
+      }
+    }
+
+  function _alcOpenDevice(pDeviceName) {
+      if (pDeviceName) {
+        var name = UTF8ToString(pDeviceName);
+        if (name !== AL.DEVICE_NAME) {
+          return 0;
+        }
+      }
+  
+      if (typeof(AudioContext) !== 'undefined' || typeof(webkitAudioContext) !== 'undefined') {
+        var deviceId = AL.newId();
+        AL.deviceRefCounts[deviceId] = 0;
+        return deviceId;
+      } else {
+        return 0;
+      }
+    }
+
+  
+  function _emscripten_get_now_is_monotonic() {
+      // return whether emscripten_get_now is guaranteed monotonic; the Date.now
+      // implementation is not :(
+      return ENVIRONMENT_IS_NODE || (typeof dateNow !== 'undefined') ||
+          ((ENVIRONMENT_IS_WEB || ENVIRONMENT_IS_WORKER) && self['performance'] && self['performance']['now']);
+    }function _clock_gettime(clk_id, tp) {
+      // int clock_gettime(clockid_t clk_id, struct timespec *tp);
+      var now;
+      if (clk_id === 0) {
+        now = Date.now();
+      } else if (clk_id === 1 && _emscripten_get_now_is_monotonic()) {
+        now = _emscripten_get_now();
+      } else {
+        ___setErrNo(22);
+        return -1;
+      }
+      HEAP32[((tp)>>2)]=(now/1000)|0; // seconds
+      HEAP32[(((tp)+(4))>>2)]=((now % 1000)*1000*1000)|0; // nanoseconds
+      return 0;
+    }
+
+  
+  var EGL={errorCode:12288,defaultDisplayInitialized:false,currentContext:0,currentReadSurface:0,currentDrawSurface:0,contextAttributes:{alpha:false,depth:false,stencil:false,antialias:false},stringCache:{},setErrorCode:function (code) {
         EGL.errorCode = code;
       },chooseConfig:function (display, attribList, config, config_size, numConfigs) { 
         if (display != 62000 /* Magic ID for Emscripten 'default display' */) {
@@ -10143,6 +12221,15 @@ function copyTempDouble(ptr) {
     }
 
 
+  
+  function __exit(status) {
+      // void _exit(int status);
+      // http://pubs.opengroup.org/onlinepubs/000095399/functions/exit.html
+      exit(status);
+    }function _exit(status) {
+      __exit(status);
+    }
+
   function _getenv(name) {
       // char *getenv(const char *name);
       // http://pubs.opengroup.org/onlinepubs/009695399/functions/getenv.html
@@ -10778,7 +12865,14 @@ function copyTempDouble(ptr) {
 
   var _llvm_cos_f32=Math_cos;
 
+  var _llvm_cos_f64=Math_cos;
+
+  
+    
+
   var _llvm_sin_f32=Math_sin;
+
+  var _llvm_sin_f64=Math_sin;
 
   function _llvm_stackrestore(p) {
       var self = _llvm_stacksave;
@@ -10885,6 +12979,7 @@ function copyTempDouble(ptr) {
       PTHREAD_SPECIFIC[key] = value;
       return 0;
     }
+
 
 
    
@@ -11239,9 +13334,18 @@ function copyTempDouble(ptr) {
       }
       return ret;
     }
-FS.staticInit();__ATINIT__.unshift(function() { if (!Module["noFSInit"] && !FS.init.initialized) FS.init() });__ATMAIN__.push(function() { FS.ignorePermissions = false });__ATEXIT__.push(function() { FS.quit() });;
+
+FS.staticInit();__ATINIT__.unshift(function() { if (!Module["noFSInit"] && !FS.init.initialized) FS.init() });__ATMAIN__.push(function() { FS.ignorePermissions = false });__ATEXIT__.push(function() { FS.quit() });Module["FS_createFolder"] = FS.createFolder;Module["FS_createPath"] = FS.createPath;Module["FS_createDataFile"] = FS.createDataFile;Module["FS_createPreloadedFile"] = FS.createPreloadedFile;Module["FS_createLazyFile"] = FS.createLazyFile;Module["FS_createLink"] = FS.createLink;Module["FS_createDevice"] = FS.createDevice;Module["FS_unlink"] = FS.unlink;;
 __ATINIT__.unshift(function() { TTY.init() });__ATEXIT__.push(function() { TTY.shutdown() });;
 if (ENVIRONMENT_IS_NODE) { var fs = require("fs"); var NODEJS_PATH = require("path"); NODEFS.staticInit(); };
+Module["requestFullScreen"] = function Module_requestFullScreen(lockPointer, resizeCanvas, vrDevice) { err("Module.requestFullScreen is deprecated. Please call Module.requestFullscreen instead."); Module["requestFullScreen"] = Module["requestFullscreen"]; Browser.requestFullScreen(lockPointer, resizeCanvas, vrDevice) };
+  Module["requestFullscreen"] = function Module_requestFullscreen(lockPointer, resizeCanvas, vrDevice) { Browser.requestFullscreen(lockPointer, resizeCanvas, vrDevice) };
+  Module["requestAnimationFrame"] = function Module_requestAnimationFrame(func) { Browser.requestAnimationFrame(func) };
+  Module["setCanvasSize"] = function Module_setCanvasSize(width, height, noUpdates) { Browser.setCanvasSize(width, height, noUpdates) };
+  Module["pauseMainLoop"] = function Module_pauseMainLoop() { Browser.mainLoop.pause() };
+  Module["resumeMainLoop"] = function Module_resumeMainLoop() { Browser.mainLoop.resume() };
+  Module["getUserMedia"] = function Module_getUserMedia() { Browser.getUserMedia() }
+  Module["createContext"] = function Module_createContext(canvas, useWebGL, setInModule, webGLContextAttributes) { return Browser.createContext(canvas, useWebGL, setInModule, webGLContextAttributes) };
 if (ENVIRONMENT_IS_NODE) {
     _emscripten_get_now = function _emscripten_get_now_actual() {
       var t = process['hrtime']();
@@ -11256,14 +13360,6 @@ if (ENVIRONMENT_IS_NODE) {
   } else {
     _emscripten_get_now = Date.now;
   };
-Module["requestFullScreen"] = function Module_requestFullScreen(lockPointer, resizeCanvas, vrDevice) { err("Module.requestFullScreen is deprecated. Please call Module.requestFullscreen instead."); Module["requestFullScreen"] = Module["requestFullscreen"]; Browser.requestFullScreen(lockPointer, resizeCanvas, vrDevice) };
-  Module["requestFullscreen"] = function Module_requestFullscreen(lockPointer, resizeCanvas, vrDevice) { Browser.requestFullscreen(lockPointer, resizeCanvas, vrDevice) };
-  Module["requestAnimationFrame"] = function Module_requestAnimationFrame(func) { Browser.requestAnimationFrame(func) };
-  Module["setCanvasSize"] = function Module_setCanvasSize(width, height, noUpdates) { Browser.setCanvasSize(width, height, noUpdates) };
-  Module["pauseMainLoop"] = function Module_pauseMainLoop() { Browser.mainLoop.pause() };
-  Module["resumeMainLoop"] = function Module_resumeMainLoop() { Browser.mainLoop.resume() };
-  Module["getUserMedia"] = function Module_getUserMedia() { Browser.getUserMedia() }
-  Module["createContext"] = function Module_createContext(canvas, useWebGL, setInModule, webGLContextAttributes) { return Browser.createContext(canvas, useWebGL, setInModule, webGLContextAttributes) };
 var GLctx; GL.init();
 for (var i = 0; i < 32; i++) __tempFixedLengthArray.push(new Array(i));;
 var ASSERTIONS = true;
@@ -11329,7 +13425,15 @@ function nullFunc_iiiiji(x) { err("Invalid function pointer called with signatur
 
 function nullFunc_iij(x) { err("Invalid function pointer called with signature 'iij'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
+function nullFunc_iiji(x) { err("Invalid function pointer called with signature 'iiji'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
 function nullFunc_iijii(x) { err("Invalid function pointer called with signature 'iijii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
+function nullFunc_ji(x) { err("Invalid function pointer called with signature 'ji'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
+function nullFunc_jiij(x) { err("Invalid function pointer called with signature 'jiij'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
+function nullFunc_jij(x) { err("Invalid function pointer called with signature 'jij'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
 function nullFunc_jiji(x) { err("Invalid function pointer called with signature 'jiji'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
@@ -11415,13 +13519,19 @@ function nullFunc_viiiiiiiiiii(x) { err("Invalid function pointer called with si
 
 function nullFunc_viiiiiiiiiiiiiii(x) { err("Invalid function pointer called with signature 'viiiiiiiiiiiiiii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
+function nullFunc_viij(x) { err("Invalid function pointer called with signature 'viij'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
 function nullFunc_viijii(x) { err("Invalid function pointer called with signature 'viijii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
+
+function nullFunc_vij(x) { err("Invalid function pointer called with signature 'vij'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
 function nullFunc_vijii(x) { err("Invalid function pointer called with signature 'vijii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
-Module['wasmTableSize'] = 108033;
+function nullFunc_vijjiii(x) { err("Invalid function pointer called with signature 'vijjiii'. Perhaps this is an invalid value (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an incorrect type, which will fail? (it is worth building your source files with -Werror (warnings are errors), as warnings can indicate undefined behavior which can cause this)");  err("Build with ASSERTIONS=2 for more info.");abort(x) }
 
-Module['wasmMaxTableSize'] = 108033;
+Module['wasmTableSize'] = 113666;
+
+Module['wasmMaxTableSize'] = 113666;
 
 function invoke_iii(index,a1,a2) {
   var sp = stackSave();
@@ -11480,45 +13590,15 @@ function invoke_viiii(index,a1,a2,a3,a4) {
 
 var asmGlobalArg = {}
 
-Module.asmLibraryArg = { "abort": abort, "assert": assert, "setTempRet0": setTempRet0, "getTempRet0": getTempRet0, "abortOnCannotGrowMemory": abortOnCannotGrowMemory, "abortStackOverflow": abortStackOverflow, "nullFunc_i": nullFunc_i, "nullFunc_ii": nullFunc_ii, "nullFunc_iii": nullFunc_iii, "nullFunc_iiii": nullFunc_iiii, "nullFunc_iiiii": nullFunc_iiiii, "nullFunc_iiiiid": nullFunc_iiiiid, "nullFunc_iiiiii": nullFunc_iiiiii, "nullFunc_iiiiiid": nullFunc_iiiiiid, "nullFunc_iiiiiii": nullFunc_iiiiiii, "nullFunc_iiiiiiii": nullFunc_iiiiiiii, "nullFunc_iiiiiiiii": nullFunc_iiiiiiiii, "nullFunc_iiiiiiiiii": nullFunc_iiiiiiiiii, "nullFunc_iiiiij": nullFunc_iiiiij, "nullFunc_iiiiji": nullFunc_iiiiji, "nullFunc_iij": nullFunc_iij, "nullFunc_iijii": nullFunc_iijii, "nullFunc_jiji": nullFunc_jiji, "nullFunc_v": nullFunc_v, "nullFunc_vd": nullFunc_vd, "nullFunc_vdd": nullFunc_vdd, "nullFunc_vddd": nullFunc_vddd, "nullFunc_vdddd": nullFunc_vdddd, "nullFunc_vf": nullFunc_vf, "nullFunc_vff": nullFunc_vff, "nullFunc_vfff": nullFunc_vfff, "nullFunc_vffff": nullFunc_vffff, "nullFunc_vfi": nullFunc_vfi, "nullFunc_vi": nullFunc_vi, "nullFunc_vid": nullFunc_vid, "nullFunc_vidd": nullFunc_vidd, "nullFunc_viddd": nullFunc_viddd, "nullFunc_vidddd": nullFunc_vidddd, "nullFunc_viddidd": nullFunc_viddidd, "nullFunc_viddiiddiii": nullFunc_viddiiddiii, "nullFunc_viddiii": nullFunc_viddiii, "nullFunc_vif": nullFunc_vif, "nullFunc_viff": nullFunc_viff, "nullFunc_vifff": nullFunc_vifff, "nullFunc_viffff": nullFunc_viffff, "nullFunc_viffiff": nullFunc_viffiff, "nullFunc_viffiiffiii": nullFunc_viffiiffiii, "nullFunc_viffiii": nullFunc_viffiii, "nullFunc_vii": nullFunc_vii, "nullFunc_viidddd": nullFunc_viidddd, "nullFunc_viif": nullFunc_viif, "nullFunc_viiffff": nullFunc_viiffff, "nullFunc_viiffffi": nullFunc_viiffffi, "nullFunc_viifi": nullFunc_viifi, "nullFunc_viii": nullFunc_viii, "nullFunc_viiii": nullFunc_viiii, "nullFunc_viiiii": nullFunc_viiiii, "nullFunc_viiiiii": nullFunc_viiiiii, "nullFunc_viiiiiii": nullFunc_viiiiiii, "nullFunc_viiiiiiii": nullFunc_viiiiiiii, "nullFunc_viiiiiiiii": nullFunc_viiiiiiiii, "nullFunc_viiiiiiiiii": nullFunc_viiiiiiiiii, "nullFunc_viiiiiiiiiii": nullFunc_viiiiiiiiiii, "nullFunc_viiiiiiiiiiiiiii": nullFunc_viiiiiiiiiiiiiii, "nullFunc_viijii": nullFunc_viijii, "nullFunc_vijii": nullFunc_vijii, "invoke_iii": invoke_iii, "invoke_iiii": invoke_iiii, "invoke_iiiii": invoke_iiiii, "invoke_vi": invoke_vi, "invoke_viiii": invoke_viiii, "___assert_fail": ___assert_fail, "___buildEnvironment": ___buildEnvironment, "___cxa_allocate_exception": ___cxa_allocate_exception, "___cxa_begin_catch": ___cxa_begin_catch, "___cxa_find_matching_catch": ___cxa_find_matching_catch, "___cxa_free_exception": ___cxa_free_exception, "___cxa_pure_virtual": ___cxa_pure_virtual, "___cxa_throw": ___cxa_throw, "___cxa_uncaught_exception": ___cxa_uncaught_exception, "___gxx_personality_v0": ___gxx_personality_v0, "___lock": ___lock, "___map_file": ___map_file, "___resumeException": ___resumeException, "___setErrNo": ___setErrNo, "___syscall140": ___syscall140, "___syscall145": ___syscall145, "___syscall146": ___syscall146, "___syscall221": ___syscall221, "___syscall5": ___syscall5, "___syscall54": ___syscall54, "___syscall6": ___syscall6, "___syscall91": ___syscall91, "___unlock": ___unlock, "__addDays": __addDays, "__arraySum": __arraySum, "__computeUnpackAlignedImageSize": __computeUnpackAlignedImageSize, "__glGenObject": __glGenObject, "__isLeapYear": __isLeapYear, "_abort": _abort, "_clock_gettime": _clock_gettime, "_eglChooseConfig": _eglChooseConfig, "_eglCreateContext": _eglCreateContext, "_eglCreateWindowSurface": _eglCreateWindowSurface, "_eglDestroyContext": _eglDestroyContext, "_eglDestroySurface": _eglDestroySurface, "_eglGetDisplay": _eglGetDisplay, "_eglGetProcAddress": _eglGetProcAddress, "_eglInitialize": _eglInitialize, "_eglMakeCurrent": _eglMakeCurrent, "_eglQueryString": _eglQueryString, "_eglSwapBuffers": _eglSwapBuffers, "_eglSwapInterval": _eglSwapInterval, "_eglTerminate": _eglTerminate, "_emscripten_get_heap_size": _emscripten_get_heap_size, "_emscripten_get_now": _emscripten_get_now, "_emscripten_get_now_is_monotonic": _emscripten_get_now_is_monotonic, "_emscripten_glAccum": _emscripten_glAccum, "_emscripten_glActiveTexture": _emscripten_glActiveTexture, "_emscripten_glAreTexturesResident": _emscripten_glAreTexturesResident, "_emscripten_glArrayElement": _emscripten_glArrayElement, "_emscripten_glAttachObjectARB": _emscripten_glAttachObjectARB, "_emscripten_glAttachShader": _emscripten_glAttachShader, "_emscripten_glBeginConditionalRender": _emscripten_glBeginConditionalRender, "_emscripten_glBeginQuery": _emscripten_glBeginQuery, "_emscripten_glBeginTransformFeedback": _emscripten_glBeginTransformFeedback, "_emscripten_glBindAttribLocation": _emscripten_glBindAttribLocation, "_emscripten_glBindBuffer": _emscripten_glBindBuffer, "_emscripten_glBindBufferBase": _emscripten_glBindBufferBase, "_emscripten_glBindBufferRange": _emscripten_glBindBufferRange, "_emscripten_glBindFragDataLocation": _emscripten_glBindFragDataLocation, "_emscripten_glBindFramebuffer": _emscripten_glBindFramebuffer, "_emscripten_glBindProgramARB": _emscripten_glBindProgramARB, "_emscripten_glBindRenderbuffer": _emscripten_glBindRenderbuffer, "_emscripten_glBindTexture": _emscripten_glBindTexture, "_emscripten_glBindVertexArray": _emscripten_glBindVertexArray, "_emscripten_glBitmap": _emscripten_glBitmap, "_emscripten_glBlendColor": _emscripten_glBlendColor, "_emscripten_glBlendEquation": _emscripten_glBlendEquation, "_emscripten_glBlendEquationSeparate": _emscripten_glBlendEquationSeparate, "_emscripten_glBlendFunc": _emscripten_glBlendFunc, "_emscripten_glBlendFuncSeparate": _emscripten_glBlendFuncSeparate, "_emscripten_glBlitFramebuffer": _emscripten_glBlitFramebuffer, "_emscripten_glBufferData": _emscripten_glBufferData, "_emscripten_glBufferSubData": _emscripten_glBufferSubData, "_emscripten_glCallList": _emscripten_glCallList, "_emscripten_glCallLists": _emscripten_glCallLists, "_emscripten_glCheckFramebufferStatus": _emscripten_glCheckFramebufferStatus, "_emscripten_glClampColor": _emscripten_glClampColor, "_emscripten_glClear": _emscripten_glClear, "_emscripten_glClearAccum": _emscripten_glClearAccum, "_emscripten_glClearBufferfi": _emscripten_glClearBufferfi, "_emscripten_glClearBufferfv": _emscripten_glClearBufferfv, "_emscripten_glClearBufferiv": _emscripten_glClearBufferiv, "_emscripten_glClearBufferuiv": _emscripten_glClearBufferuiv, "_emscripten_glClearColor": _emscripten_glClearColor, "_emscripten_glClearDepth": _emscripten_glClearDepth, "_emscripten_glClearDepthf": _emscripten_glClearDepthf, "_emscripten_glClearIndex": _emscripten_glClearIndex, "_emscripten_glClearStencil": _emscripten_glClearStencil, "_emscripten_glClipPlane": _emscripten_glClipPlane, "_emscripten_glColorMask": _emscripten_glColorMask, "_emscripten_glColorMaski": _emscripten_glColorMaski, "_emscripten_glColorMaterial": _emscripten_glColorMaterial, "_emscripten_glColorSubTable": _emscripten_glColorSubTable, "_emscripten_glColorTable": _emscripten_glColorTable, "_emscripten_glColorTableParameterfv": _emscripten_glColorTableParameterfv, "_emscripten_glColorTableParameteriv": _emscripten_glColorTableParameteriv, "_emscripten_glCompileShader": _emscripten_glCompileShader, "_emscripten_glCompressedTexImage1D": _emscripten_glCompressedTexImage1D, "_emscripten_glCompressedTexImage2D": _emscripten_glCompressedTexImage2D, "_emscripten_glCompressedTexImage3D": _emscripten_glCompressedTexImage3D, "_emscripten_glCompressedTexSubImage1D": _emscripten_glCompressedTexSubImage1D, "_emscripten_glCompressedTexSubImage2D": _emscripten_glCompressedTexSubImage2D, "_emscripten_glCompressedTexSubImage3D": _emscripten_glCompressedTexSubImage3D, "_emscripten_glConvolutionFilter1D": _emscripten_glConvolutionFilter1D, "_emscripten_glConvolutionFilter2D": _emscripten_glConvolutionFilter2D, "_emscripten_glConvolutionParameterf": _emscripten_glConvolutionParameterf, "_emscripten_glConvolutionParameterfv": _emscripten_glConvolutionParameterfv, "_emscripten_glConvolutionParameteri": _emscripten_glConvolutionParameteri, "_emscripten_glConvolutionParameteriv": _emscripten_glConvolutionParameteriv, "_emscripten_glCopyColorSubTable": _emscripten_glCopyColorSubTable, "_emscripten_glCopyColorTable": _emscripten_glCopyColorTable, "_emscripten_glCopyConvolutionFilter1D": _emscripten_glCopyConvolutionFilter1D, "_emscripten_glCopyConvolutionFilter2D": _emscripten_glCopyConvolutionFilter2D, "_emscripten_glCopyPixels": _emscripten_glCopyPixels, "_emscripten_glCopyTexImage1D": _emscripten_glCopyTexImage1D, "_emscripten_glCopyTexImage2D": _emscripten_glCopyTexImage2D, "_emscripten_glCopyTexSubImage1D": _emscripten_glCopyTexSubImage1D, "_emscripten_glCopyTexSubImage2D": _emscripten_glCopyTexSubImage2D, "_emscripten_glCopyTexSubImage3D": _emscripten_glCopyTexSubImage3D, "_emscripten_glCreateProgram": _emscripten_glCreateProgram, "_emscripten_glCreateProgramObjectARB": _emscripten_glCreateProgramObjectARB, "_emscripten_glCreateShader": _emscripten_glCreateShader, "_emscripten_glCreateShaderObjectARB": _emscripten_glCreateShaderObjectARB, "_emscripten_glCullFace": _emscripten_glCullFace, "_emscripten_glDeleteBuffers": _emscripten_glDeleteBuffers, "_emscripten_glDeleteFramebuffers": _emscripten_glDeleteFramebuffers, "_emscripten_glDeleteLists": _emscripten_glDeleteLists, "_emscripten_glDeleteProgram": _emscripten_glDeleteProgram, "_emscripten_glDeleteProgramsARB": _emscripten_glDeleteProgramsARB, "_emscripten_glDeleteQueries": _emscripten_glDeleteQueries, "_emscripten_glDeleteRenderbuffers": _emscripten_glDeleteRenderbuffers, "_emscripten_glDeleteShader": _emscripten_glDeleteShader, "_emscripten_glDeleteTextures": _emscripten_glDeleteTextures, "_emscripten_glDeleteVertexArrays": _emscripten_glDeleteVertexArrays, "_emscripten_glDepthFunc": _emscripten_glDepthFunc, "_emscripten_glDepthMask": _emscripten_glDepthMask, "_emscripten_glDepthRange": _emscripten_glDepthRange, "_emscripten_glDepthRangef": _emscripten_glDepthRangef, "_emscripten_glDetachObjectARB": _emscripten_glDetachObjectARB, "_emscripten_glDetachShader": _emscripten_glDetachShader, "_emscripten_glDisable": _emscripten_glDisable, "_emscripten_glDisableVertexAttribArray": _emscripten_glDisableVertexAttribArray, "_emscripten_glDisablei": _emscripten_glDisablei, "_emscripten_glDrawArrays": _emscripten_glDrawArrays, "_emscripten_glDrawArraysInstanced": _emscripten_glDrawArraysInstanced, "_emscripten_glDrawBuffers": _emscripten_glDrawBuffers, "_emscripten_glDrawElements": _emscripten_glDrawElements, "_emscripten_glDrawElementsInstanced": _emscripten_glDrawElementsInstanced, "_emscripten_glDrawPixels": _emscripten_glDrawPixels, "_emscripten_glDrawRangeElements": _emscripten_glDrawRangeElements, "_emscripten_glEdgeFlag": _emscripten_glEdgeFlag, "_emscripten_glEdgeFlagPointer": _emscripten_glEdgeFlagPointer, "_emscripten_glEdgeFlagv": _emscripten_glEdgeFlagv, "_emscripten_glEnable": _emscripten_glEnable, "_emscripten_glEnableVertexAttribArray": _emscripten_glEnableVertexAttribArray, "_emscripten_glEnablei": _emscripten_glEnablei, "_emscripten_glEndConditionalRender": _emscripten_glEndConditionalRender, "_emscripten_glEndList": _emscripten_glEndList, "_emscripten_glEndQuery": _emscripten_glEndQuery, "_emscripten_glEndTransformFeedback": _emscripten_glEndTransformFeedback, "_emscripten_glEvalCoord1d": _emscripten_glEvalCoord1d, "_emscripten_glEvalCoord1dv": _emscripten_glEvalCoord1dv, "_emscripten_glEvalCoord1f": _emscripten_glEvalCoord1f, "_emscripten_glEvalCoord1fv": _emscripten_glEvalCoord1fv, "_emscripten_glEvalCoord2d": _emscripten_glEvalCoord2d, "_emscripten_glEvalCoord2dv": _emscripten_glEvalCoord2dv, "_emscripten_glEvalCoord2f": _emscripten_glEvalCoord2f, "_emscripten_glEvalCoord2fv": _emscripten_glEvalCoord2fv, "_emscripten_glEvalMesh1": _emscripten_glEvalMesh1, "_emscripten_glEvalMesh2": _emscripten_glEvalMesh2, "_emscripten_glEvalPoint1": _emscripten_glEvalPoint1, "_emscripten_glEvalPoint2": _emscripten_glEvalPoint2, "_emscripten_glFeedbackBuffer": _emscripten_glFeedbackBuffer, "_emscripten_glFinish": _emscripten_glFinish, "_emscripten_glFlush": _emscripten_glFlush, "_emscripten_glFogf": _emscripten_glFogf, "_emscripten_glFogfv": _emscripten_glFogfv, "_emscripten_glFogi": _emscripten_glFogi, "_emscripten_glFogiv": _emscripten_glFogiv, "_emscripten_glFramebufferRenderbuffer": _emscripten_glFramebufferRenderbuffer, "_emscripten_glFramebufferTexture1D": _emscripten_glFramebufferTexture1D, "_emscripten_glFramebufferTexture2D": _emscripten_glFramebufferTexture2D, "_emscripten_glFramebufferTexture3D": _emscripten_glFramebufferTexture3D, "_emscripten_glFramebufferTextureLayer": _emscripten_glFramebufferTextureLayer, "_emscripten_glFrontFace": _emscripten_glFrontFace, "_emscripten_glGenBuffers": _emscripten_glGenBuffers, "_emscripten_glGenFramebuffers": _emscripten_glGenFramebuffers, "_emscripten_glGenLists": _emscripten_glGenLists, "_emscripten_glGenProgramsARB": _emscripten_glGenProgramsARB, "_emscripten_glGenQueries": _emscripten_glGenQueries, "_emscripten_glGenRenderbuffers": _emscripten_glGenRenderbuffers, "_emscripten_glGenTextures": _emscripten_glGenTextures, "_emscripten_glGenVertexArrays": _emscripten_glGenVertexArrays, "_emscripten_glGenerateMipmap": _emscripten_glGenerateMipmap, "_emscripten_glGetActiveAttrib": _emscripten_glGetActiveAttrib, "_emscripten_glGetActiveUniform": _emscripten_glGetActiveUniform, "_emscripten_glGetActiveUniformBlockName": _emscripten_glGetActiveUniformBlockName, "_emscripten_glGetActiveUniformBlockiv": _emscripten_glGetActiveUniformBlockiv, "_emscripten_glGetActiveUniformName": _emscripten_glGetActiveUniformName, "_emscripten_glGetActiveUniformsiv": _emscripten_glGetActiveUniformsiv, "_emscripten_glGetAttachedObjectsARB": _emscripten_glGetAttachedObjectsARB, "_emscripten_glGetAttachedShaders": _emscripten_glGetAttachedShaders, "_emscripten_glGetAttribLocation": _emscripten_glGetAttribLocation, "_emscripten_glGetBooleani_v": _emscripten_glGetBooleani_v, "_emscripten_glGetBooleanv": _emscripten_glGetBooleanv, "_emscripten_glGetBufferParameteriv": _emscripten_glGetBufferParameteriv, "_emscripten_glGetBufferPointerv": _emscripten_glGetBufferPointerv, "_emscripten_glGetBufferSubData": _emscripten_glGetBufferSubData, "_emscripten_glGetClipPlane": _emscripten_glGetClipPlane, "_emscripten_glGetColorTable": _emscripten_glGetColorTable, "_emscripten_glGetColorTableParameterfv": _emscripten_glGetColorTableParameterfv, "_emscripten_glGetColorTableParameteriv": _emscripten_glGetColorTableParameteriv, "_emscripten_glGetCompressedTexImage": _emscripten_glGetCompressedTexImage, "_emscripten_glGetConvolutionFilter": _emscripten_glGetConvolutionFilter, "_emscripten_glGetConvolutionParameterfv": _emscripten_glGetConvolutionParameterfv, "_emscripten_glGetConvolutionParameteriv": _emscripten_glGetConvolutionParameteriv, "_emscripten_glGetDoublev": _emscripten_glGetDoublev, "_emscripten_glGetError": _emscripten_glGetError, "_emscripten_glGetFloatv": _emscripten_glGetFloatv, "_emscripten_glGetFragDataLocation": _emscripten_glGetFragDataLocation, "_emscripten_glGetFramebufferAttachmentParameteriv": _emscripten_glGetFramebufferAttachmentParameteriv, "_emscripten_glGetHandleARB": _emscripten_glGetHandleARB, "_emscripten_glGetHistogram": _emscripten_glGetHistogram, "_emscripten_glGetHistogramParameterfv": _emscripten_glGetHistogramParameterfv, "_emscripten_glGetHistogramParameteriv": _emscripten_glGetHistogramParameteriv, "_emscripten_glGetIntegeri_v": _emscripten_glGetIntegeri_v, "_emscripten_glGetIntegerv": _emscripten_glGetIntegerv, "_emscripten_glGetLightfv": _emscripten_glGetLightfv, "_emscripten_glGetLightiv": _emscripten_glGetLightiv, "_emscripten_glGetMapdv": _emscripten_glGetMapdv, "_emscripten_glGetMapfv": _emscripten_glGetMapfv, "_emscripten_glGetMapiv": _emscripten_glGetMapiv, "_emscripten_glGetMaterialfv": _emscripten_glGetMaterialfv, "_emscripten_glGetMaterialiv": _emscripten_glGetMaterialiv, "_emscripten_glGetMinmax": _emscripten_glGetMinmax, "_emscripten_glGetMinmaxParameterfv": _emscripten_glGetMinmaxParameterfv, "_emscripten_glGetMinmaxParameteriv": _emscripten_glGetMinmaxParameteriv, "_emscripten_glGetObjectParameterfvARB": _emscripten_glGetObjectParameterfvARB, "_emscripten_glGetObjectParameterivARB": _emscripten_glGetObjectParameterivARB, "_emscripten_glGetPixelMapfv": _emscripten_glGetPixelMapfv, "_emscripten_glGetPixelMapuiv": _emscripten_glGetPixelMapuiv, "_emscripten_glGetPixelMapusv": _emscripten_glGetPixelMapusv, "_emscripten_glGetPointerv": _emscripten_glGetPointerv, "_emscripten_glGetPolygonStipple": _emscripten_glGetPolygonStipple, "_emscripten_glGetProgramEnvParameterdvARB": _emscripten_glGetProgramEnvParameterdvARB, "_emscripten_glGetProgramEnvParameterfvARB": _emscripten_glGetProgramEnvParameterfvARB, "_emscripten_glGetProgramInfoLog": _emscripten_glGetProgramInfoLog, "_emscripten_glGetProgramLocalParameterdvARB": _emscripten_glGetProgramLocalParameterdvARB, "_emscripten_glGetProgramLocalParameterfvARB": _emscripten_glGetProgramLocalParameterfvARB, "_emscripten_glGetProgramStringARB": _emscripten_glGetProgramStringARB, "_emscripten_glGetProgramiv": _emscripten_glGetProgramiv, "_emscripten_glGetQueryObjectiv": _emscripten_glGetQueryObjectiv, "_emscripten_glGetQueryObjectuiv": _emscripten_glGetQueryObjectuiv, "_emscripten_glGetQueryiv": _emscripten_glGetQueryiv, "_emscripten_glGetRenderbufferParameteriv": _emscripten_glGetRenderbufferParameteriv, "_emscripten_glGetSeparableFilter": _emscripten_glGetSeparableFilter, "_emscripten_glGetShaderInfoLog": _emscripten_glGetShaderInfoLog, "_emscripten_glGetShaderPrecisionFormat": _emscripten_glGetShaderPrecisionFormat, "_emscripten_glGetShaderSource": _emscripten_glGetShaderSource, "_emscripten_glGetShaderiv": _emscripten_glGetShaderiv, "_emscripten_glGetString": _emscripten_glGetString, "_emscripten_glGetStringi": _emscripten_glGetStringi, "_emscripten_glGetTexGendv": _emscripten_glGetTexGendv, "_emscripten_glGetTexGenfv": _emscripten_glGetTexGenfv, "_emscripten_glGetTexGeniv": _emscripten_glGetTexGeniv, "_emscripten_glGetTexImage": _emscripten_glGetTexImage, "_emscripten_glGetTexParameterIiv": _emscripten_glGetTexParameterIiv, "_emscripten_glGetTexParameterIuiv": _emscripten_glGetTexParameterIuiv, "_emscripten_glGetTexParameterfv": _emscripten_glGetTexParameterfv, "_emscripten_glGetTexParameteriv": _emscripten_glGetTexParameteriv, "_emscripten_glGetTransformFeedbackVarying": _emscripten_glGetTransformFeedbackVarying, "_emscripten_glGetUniformBlockIndex": _emscripten_glGetUniformBlockIndex, "_emscripten_glGetUniformIndices": _emscripten_glGetUniformIndices, "_emscripten_glGetUniformLocation": _emscripten_glGetUniformLocation, "_emscripten_glGetUniformfv": _emscripten_glGetUniformfv, "_emscripten_glGetUniformiv": _emscripten_glGetUniformiv, "_emscripten_glGetUniformuiv": _emscripten_glGetUniformuiv, "_emscripten_glGetVertexAttribIiv": _emscripten_glGetVertexAttribIiv, "_emscripten_glGetVertexAttribIuiv": _emscripten_glGetVertexAttribIuiv, "_emscripten_glGetVertexAttribPointerv": _emscripten_glGetVertexAttribPointerv, "_emscripten_glGetVertexAttribdv": _emscripten_glGetVertexAttribdv, "_emscripten_glGetVertexAttribfv": _emscripten_glGetVertexAttribfv, "_emscripten_glGetVertexAttribiv": _emscripten_glGetVertexAttribiv, "_emscripten_glHint": _emscripten_glHint, "_emscripten_glHistogram": _emscripten_glHistogram, "_emscripten_glIndexMask": _emscripten_glIndexMask, "_emscripten_glIndexPointer": _emscripten_glIndexPointer, "_emscripten_glIndexd": _emscripten_glIndexd, "_emscripten_glIndexdv": _emscripten_glIndexdv, "_emscripten_glIndexf": _emscripten_glIndexf, "_emscripten_glIndexfv": _emscripten_glIndexfv, "_emscripten_glIndexi": _emscripten_glIndexi, "_emscripten_glIndexiv": _emscripten_glIndexiv, "_emscripten_glIndexs": _emscripten_glIndexs, "_emscripten_glIndexsv": _emscripten_glIndexsv, "_emscripten_glIndexub": _emscripten_glIndexub, "_emscripten_glIndexubv": _emscripten_glIndexubv, "_emscripten_glInitNames": _emscripten_glInitNames, "_emscripten_glInterleavedArrays": _emscripten_glInterleavedArrays, "_emscripten_glIsBuffer": _emscripten_glIsBuffer, "_emscripten_glIsEnabled": _emscripten_glIsEnabled, "_emscripten_glIsEnabledi": _emscripten_glIsEnabledi, "_emscripten_glIsFramebuffer": _emscripten_glIsFramebuffer, "_emscripten_glIsList": _emscripten_glIsList, "_emscripten_glIsProgram": _emscripten_glIsProgram, "_emscripten_glIsQuery": _emscripten_glIsQuery, "_emscripten_glIsRenderbuffer": _emscripten_glIsRenderbuffer, "_emscripten_glIsShader": _emscripten_glIsShader, "_emscripten_glIsTexture": _emscripten_glIsTexture, "_emscripten_glIsVertexArray": _emscripten_glIsVertexArray, "_emscripten_glLineStipple": _emscripten_glLineStipple, "_emscripten_glLineWidth": _emscripten_glLineWidth, "_emscripten_glLinkProgram": _emscripten_glLinkProgram, "_emscripten_glListBase": _emscripten_glListBase, "_emscripten_glLoadName": _emscripten_glLoadName, "_emscripten_glLoadTransposeMatrixd": _emscripten_glLoadTransposeMatrixd, "_emscripten_glLoadTransposeMatrixf": _emscripten_glLoadTransposeMatrixf, "_emscripten_glLogicOp": _emscripten_glLogicOp, "_emscripten_glMap1d": _emscripten_glMap1d, "_emscripten_glMap1f": _emscripten_glMap1f, "_emscripten_glMap2d": _emscripten_glMap2d, "_emscripten_glMap2f": _emscripten_glMap2f, "_emscripten_glMapBuffer": _emscripten_glMapBuffer, "_emscripten_glMapGrid1d": _emscripten_glMapGrid1d, "_emscripten_glMapGrid1f": _emscripten_glMapGrid1f, "_emscripten_glMapGrid2d": _emscripten_glMapGrid2d, "_emscripten_glMapGrid2f": _emscripten_glMapGrid2f, "_emscripten_glMinmax": _emscripten_glMinmax, "_emscripten_glMultTransposeMatrixd": _emscripten_glMultTransposeMatrixd, "_emscripten_glMultTransposeMatrixf": _emscripten_glMultTransposeMatrixf, "_emscripten_glMultiDrawArrays": _emscripten_glMultiDrawArrays, "_emscripten_glMultiDrawElements": _emscripten_glMultiDrawElements, "_emscripten_glMultiTexCoord1d": _emscripten_glMultiTexCoord1d, "_emscripten_glMultiTexCoord1dv": _emscripten_glMultiTexCoord1dv, "_emscripten_glMultiTexCoord1f": _emscripten_glMultiTexCoord1f, "_emscripten_glMultiTexCoord1fv": _emscripten_glMultiTexCoord1fv, "_emscripten_glMultiTexCoord1i": _emscripten_glMultiTexCoord1i, "_emscripten_glMultiTexCoord1iv": _emscripten_glMultiTexCoord1iv, "_emscripten_glMultiTexCoord1s": _emscripten_glMultiTexCoord1s, "_emscripten_glMultiTexCoord1sv": _emscripten_glMultiTexCoord1sv, "_emscripten_glMultiTexCoord2d": _emscripten_glMultiTexCoord2d, "_emscripten_glMultiTexCoord2dv": _emscripten_glMultiTexCoord2dv, "_emscripten_glMultiTexCoord2f": _emscripten_glMultiTexCoord2f, "_emscripten_glMultiTexCoord2fv": _emscripten_glMultiTexCoord2fv, "_emscripten_glMultiTexCoord2i": _emscripten_glMultiTexCoord2i, "_emscripten_glMultiTexCoord2iv": _emscripten_glMultiTexCoord2iv, "_emscripten_glMultiTexCoord2s": _emscripten_glMultiTexCoord2s, "_emscripten_glMultiTexCoord2sv": _emscripten_glMultiTexCoord2sv, "_emscripten_glMultiTexCoord3d": _emscripten_glMultiTexCoord3d, "_emscripten_glMultiTexCoord3dv": _emscripten_glMultiTexCoord3dv, "_emscripten_glMultiTexCoord3f": _emscripten_glMultiTexCoord3f, "_emscripten_glMultiTexCoord3fv": _emscripten_glMultiTexCoord3fv, "_emscripten_glMultiTexCoord3i": _emscripten_glMultiTexCoord3i, "_emscripten_glMultiTexCoord3iv": _emscripten_glMultiTexCoord3iv, "_emscripten_glMultiTexCoord3s": _emscripten_glMultiTexCoord3s, "_emscripten_glMultiTexCoord3sv": _emscripten_glMultiTexCoord3sv, "_emscripten_glMultiTexCoord4d": _emscripten_glMultiTexCoord4d, "_emscripten_glMultiTexCoord4dv": _emscripten_glMultiTexCoord4dv, "_emscripten_glMultiTexCoord4f": _emscripten_glMultiTexCoord4f, "_emscripten_glMultiTexCoord4fv": _emscripten_glMultiTexCoord4fv, "_emscripten_glMultiTexCoord4i": _emscripten_glMultiTexCoord4i, "_emscripten_glMultiTexCoord4iv": _emscripten_glMultiTexCoord4iv, "_emscripten_glMultiTexCoord4s": _emscripten_glMultiTexCoord4s, "_emscripten_glMultiTexCoord4sv": _emscripten_glMultiTexCoord4sv, "_emscripten_glNewList": _emscripten_glNewList, "_emscripten_glPassThrough": _emscripten_glPassThrough, "_emscripten_glPixelMapfv": _emscripten_glPixelMapfv, "_emscripten_glPixelMapuiv": _emscripten_glPixelMapuiv, "_emscripten_glPixelMapusv": _emscripten_glPixelMapusv, "_emscripten_glPixelStoref": _emscripten_glPixelStoref, "_emscripten_glPixelStorei": _emscripten_glPixelStorei, "_emscripten_glPixelTransferf": _emscripten_glPixelTransferf, "_emscripten_glPixelTransferi": _emscripten_glPixelTransferi, "_emscripten_glPixelZoom": _emscripten_glPixelZoom, "_emscripten_glPointParameterf": _emscripten_glPointParameterf, "_emscripten_glPointParameterfv": _emscripten_glPointParameterfv, "_emscripten_glPointParameteri": _emscripten_glPointParameteri, "_emscripten_glPointParameteriv": _emscripten_glPointParameteriv, "_emscripten_glPointSize": _emscripten_glPointSize, "_emscripten_glPolygonOffset": _emscripten_glPolygonOffset, "_emscripten_glPolygonStipple": _emscripten_glPolygonStipple, "_emscripten_glPopAttrib": _emscripten_glPopAttrib, "_emscripten_glPopClientAttrib": _emscripten_glPopClientAttrib, "_emscripten_glPopName": _emscripten_glPopName, "_emscripten_glPrimitiveRestartIndex": _emscripten_glPrimitiveRestartIndex, "_emscripten_glPrioritizeTextures": _emscripten_glPrioritizeTextures, "_emscripten_glProgramEnvParameter4dARB": _emscripten_glProgramEnvParameter4dARB, "_emscripten_glProgramEnvParameter4dvARB": _emscripten_glProgramEnvParameter4dvARB, "_emscripten_glProgramEnvParameter4fARB": _emscripten_glProgramEnvParameter4fARB, "_emscripten_glProgramEnvParameter4fvARB": _emscripten_glProgramEnvParameter4fvARB, "_emscripten_glProgramLocalParameter4dARB": _emscripten_glProgramLocalParameter4dARB, "_emscripten_glProgramLocalParameter4dvARB": _emscripten_glProgramLocalParameter4dvARB, "_emscripten_glProgramLocalParameter4fARB": _emscripten_glProgramLocalParameter4fARB, "_emscripten_glProgramLocalParameter4fvARB": _emscripten_glProgramLocalParameter4fvARB, "_emscripten_glProgramStringARB": _emscripten_glProgramStringARB, "_emscripten_glPushAttrib": _emscripten_glPushAttrib, "_emscripten_glPushClientAttrib": _emscripten_glPushClientAttrib, "_emscripten_glPushName": _emscripten_glPushName, "_emscripten_glRasterPos2d": _emscripten_glRasterPos2d, "_emscripten_glRasterPos2dv": _emscripten_glRasterPos2dv, "_emscripten_glRasterPos2f": _emscripten_glRasterPos2f, "_emscripten_glRasterPos2fv": _emscripten_glRasterPos2fv, "_emscripten_glRasterPos2i": _emscripten_glRasterPos2i, "_emscripten_glRasterPos2iv": _emscripten_glRasterPos2iv, "_emscripten_glRasterPos2s": _emscripten_glRasterPos2s, "_emscripten_glRasterPos2sv": _emscripten_glRasterPos2sv, "_emscripten_glRasterPos3d": _emscripten_glRasterPos3d, "_emscripten_glRasterPos3dv": _emscripten_glRasterPos3dv, "_emscripten_glRasterPos3f": _emscripten_glRasterPos3f, "_emscripten_glRasterPos3fv": _emscripten_glRasterPos3fv, "_emscripten_glRasterPos3i": _emscripten_glRasterPos3i, "_emscripten_glRasterPos3iv": _emscripten_glRasterPos3iv, "_emscripten_glRasterPos3s": _emscripten_glRasterPos3s, "_emscripten_glRasterPos3sv": _emscripten_glRasterPos3sv, "_emscripten_glRasterPos4d": _emscripten_glRasterPos4d, "_emscripten_glRasterPos4dv": _emscripten_glRasterPos4dv, "_emscripten_glRasterPos4f": _emscripten_glRasterPos4f, "_emscripten_glRasterPos4fv": _emscripten_glRasterPos4fv, "_emscripten_glRasterPos4i": _emscripten_glRasterPos4i, "_emscripten_glRasterPos4iv": _emscripten_glRasterPos4iv, "_emscripten_glRasterPos4s": _emscripten_glRasterPos4s, "_emscripten_glRasterPos4sv": _emscripten_glRasterPos4sv, "_emscripten_glReadPixels": _emscripten_glReadPixels, "_emscripten_glRectd": _emscripten_glRectd, "_emscripten_glRectdv": _emscripten_glRectdv, "_emscripten_glRectf": _emscripten_glRectf, "_emscripten_glRectfv": _emscripten_glRectfv, "_emscripten_glRecti": _emscripten_glRecti, "_emscripten_glRectiv": _emscripten_glRectiv, "_emscripten_glRects": _emscripten_glRects, "_emscripten_glRectsv": _emscripten_glRectsv, "_emscripten_glReleaseShaderCompiler": _emscripten_glReleaseShaderCompiler, "_emscripten_glRenderMode": _emscripten_glRenderMode, "_emscripten_glRenderbufferStorage": _emscripten_glRenderbufferStorage, "_emscripten_glRenderbufferStorageMultisample": _emscripten_glRenderbufferStorageMultisample, "_emscripten_glResetHistogram": _emscripten_glResetHistogram, "_emscripten_glResetMinmax": _emscripten_glResetMinmax, "_emscripten_glSampleCoverage": _emscripten_glSampleCoverage, "_emscripten_glScissor": _emscripten_glScissor, "_emscripten_glSecondaryColor3b": _emscripten_glSecondaryColor3b, "_emscripten_glSecondaryColor3bv": _emscripten_glSecondaryColor3bv, "_emscripten_glSecondaryColor3d": _emscripten_glSecondaryColor3d, "_emscripten_glSecondaryColor3dv": _emscripten_glSecondaryColor3dv, "_emscripten_glSecondaryColor3f": _emscripten_glSecondaryColor3f, "_emscripten_glSecondaryColor3fv": _emscripten_glSecondaryColor3fv, "_emscripten_glSecondaryColor3i": _emscripten_glSecondaryColor3i, "_emscripten_glSecondaryColor3iv": _emscripten_glSecondaryColor3iv, "_emscripten_glSecondaryColor3s": _emscripten_glSecondaryColor3s, "_emscripten_glSecondaryColor3sv": _emscripten_glSecondaryColor3sv, "_emscripten_glSecondaryColor3ub": _emscripten_glSecondaryColor3ub, "_emscripten_glSecondaryColor3ubv": _emscripten_glSecondaryColor3ubv, "_emscripten_glSecondaryColor3ui": _emscripten_glSecondaryColor3ui, "_emscripten_glSecondaryColor3uiv": _emscripten_glSecondaryColor3uiv, "_emscripten_glSecondaryColor3us": _emscripten_glSecondaryColor3us, "_emscripten_glSecondaryColor3usv": _emscripten_glSecondaryColor3usv, "_emscripten_glSecondaryColorPointer": _emscripten_glSecondaryColorPointer, "_emscripten_glSelectBuffer": _emscripten_glSelectBuffer, "_emscripten_glSeparableFilter2D": _emscripten_glSeparableFilter2D, "_emscripten_glShaderBinary": _emscripten_glShaderBinary, "_emscripten_glShaderSource": _emscripten_glShaderSource, "_emscripten_glStencilFunc": _emscripten_glStencilFunc, "_emscripten_glStencilFuncSeparate": _emscripten_glStencilFuncSeparate, "_emscripten_glStencilMask": _emscripten_glStencilMask, "_emscripten_glStencilMaskSeparate": _emscripten_glStencilMaskSeparate, "_emscripten_glStencilOp": _emscripten_glStencilOp, "_emscripten_glStencilOpSeparate": _emscripten_glStencilOpSeparate, "_emscripten_glTexBuffer": _emscripten_glTexBuffer, "_emscripten_glTexEnvf": _emscripten_glTexEnvf, "_emscripten_glTexEnvfv": _emscripten_glTexEnvfv, "_emscripten_glTexEnvi": _emscripten_glTexEnvi, "_emscripten_glTexEnviv": _emscripten_glTexEnviv, "_emscripten_glTexImage2D": _emscripten_glTexImage2D, "_emscripten_glTexImage3D": _emscripten_glTexImage3D, "_emscripten_glTexParameterIiv": _emscripten_glTexParameterIiv, "_emscripten_glTexParameterIuiv": _emscripten_glTexParameterIuiv, "_emscripten_glTexParameterf": _emscripten_glTexParameterf, "_emscripten_glTexParameterfv": _emscripten_glTexParameterfv, "_emscripten_glTexParameteri": _emscripten_glTexParameteri, "_emscripten_glTexParameteriv": _emscripten_glTexParameteriv, "_emscripten_glTexStorage2D": _emscripten_glTexStorage2D, "_emscripten_glTexStorage3D": _emscripten_glTexStorage3D, "_emscripten_glTexSubImage1D": _emscripten_glTexSubImage1D, "_emscripten_glTexSubImage2D": _emscripten_glTexSubImage2D, "_emscripten_glTexSubImage3D": _emscripten_glTexSubImage3D, "_emscripten_glTransformFeedbackVaryings": _emscripten_glTransformFeedbackVaryings, "_emscripten_glUniform1f": _emscripten_glUniform1f, "_emscripten_glUniform1fv": _emscripten_glUniform1fv, "_emscripten_glUniform1i": _emscripten_glUniform1i, "_emscripten_glUniform1iv": _emscripten_glUniform1iv, "_emscripten_glUniform1ui": _emscripten_glUniform1ui, "_emscripten_glUniform1uiv": _emscripten_glUniform1uiv, "_emscripten_glUniform2f": _emscripten_glUniform2f, "_emscripten_glUniform2fv": _emscripten_glUniform2fv, "_emscripten_glUniform2i": _emscripten_glUniform2i, "_emscripten_glUniform2iv": _emscripten_glUniform2iv, "_emscripten_glUniform2ui": _emscripten_glUniform2ui, "_emscripten_glUniform2uiv": _emscripten_glUniform2uiv, "_emscripten_glUniform3f": _emscripten_glUniform3f, "_emscripten_glUniform3fv": _emscripten_glUniform3fv, "_emscripten_glUniform3i": _emscripten_glUniform3i, "_emscripten_glUniform3iv": _emscripten_glUniform3iv, "_emscripten_glUniform3ui": _emscripten_glUniform3ui, "_emscripten_glUniform3uiv": _emscripten_glUniform3uiv, "_emscripten_glUniform4f": _emscripten_glUniform4f, "_emscripten_glUniform4fv": _emscripten_glUniform4fv, "_emscripten_glUniform4i": _emscripten_glUniform4i, "_emscripten_glUniform4iv": _emscripten_glUniform4iv, "_emscripten_glUniform4ui": _emscripten_glUniform4ui, "_emscripten_glUniform4uiv": _emscripten_glUniform4uiv, "_emscripten_glUniformBlockBinding": _emscripten_glUniformBlockBinding, "_emscripten_glUniformMatrix2fv": _emscripten_glUniformMatrix2fv, "_emscripten_glUniformMatrix2x3fv": _emscripten_glUniformMatrix2x3fv, "_emscripten_glUniformMatrix2x4fv": _emscripten_glUniformMatrix2x4fv, "_emscripten_glUniformMatrix3fv": _emscripten_glUniformMatrix3fv, "_emscripten_glUniformMatrix3x2fv": _emscripten_glUniformMatrix3x2fv, "_emscripten_glUniformMatrix3x4fv": _emscripten_glUniformMatrix3x4fv, "_emscripten_glUniformMatrix4fv": _emscripten_glUniformMatrix4fv, "_emscripten_glUniformMatrix4x2fv": _emscripten_glUniformMatrix4x2fv, "_emscripten_glUniformMatrix4x3fv": _emscripten_glUniformMatrix4x3fv, "_emscripten_glUnmapBuffer": _emscripten_glUnmapBuffer, "_emscripten_glUseProgram": _emscripten_glUseProgram, "_emscripten_glUseProgramObjectARB": _emscripten_glUseProgramObjectARB, "_emscripten_glValidateProgram": _emscripten_glValidateProgram, "_emscripten_glVertexAttrib1d": _emscripten_glVertexAttrib1d, "_emscripten_glVertexAttrib1dv": _emscripten_glVertexAttrib1dv, "_emscripten_glVertexAttrib1f": _emscripten_glVertexAttrib1f, "_emscripten_glVertexAttrib1fv": _emscripten_glVertexAttrib1fv, "_emscripten_glVertexAttrib1s": _emscripten_glVertexAttrib1s, "_emscripten_glVertexAttrib1sv": _emscripten_glVertexAttrib1sv, "_emscripten_glVertexAttrib2d": _emscripten_glVertexAttrib2d, "_emscripten_glVertexAttrib2dv": _emscripten_glVertexAttrib2dv, "_emscripten_glVertexAttrib2f": _emscripten_glVertexAttrib2f, "_emscripten_glVertexAttrib2fv": _emscripten_glVertexAttrib2fv, "_emscripten_glVertexAttrib2s": _emscripten_glVertexAttrib2s, "_emscripten_glVertexAttrib2sv": _emscripten_glVertexAttrib2sv, "_emscripten_glVertexAttrib3d": _emscripten_glVertexAttrib3d, "_emscripten_glVertexAttrib3dv": _emscripten_glVertexAttrib3dv, "_emscripten_glVertexAttrib3f": _emscripten_glVertexAttrib3f, "_emscripten_glVertexAttrib3fv": _emscripten_glVertexAttrib3fv, "_emscripten_glVertexAttrib3s": _emscripten_glVertexAttrib3s, "_emscripten_glVertexAttrib3sv": _emscripten_glVertexAttrib3sv, "_emscripten_glVertexAttrib4Nbv": _emscripten_glVertexAttrib4Nbv, "_emscripten_glVertexAttrib4Niv": _emscripten_glVertexAttrib4Niv, "_emscripten_glVertexAttrib4Nsv": _emscripten_glVertexAttrib4Nsv, "_emscripten_glVertexAttrib4Nub": _emscripten_glVertexAttrib4Nub, "_emscripten_glVertexAttrib4Nubv": _emscripten_glVertexAttrib4Nubv, "_emscripten_glVertexAttrib4Nuiv": _emscripten_glVertexAttrib4Nuiv, "_emscripten_glVertexAttrib4Nusv": _emscripten_glVertexAttrib4Nusv, "_emscripten_glVertexAttrib4bv": _emscripten_glVertexAttrib4bv, "_emscripten_glVertexAttrib4d": _emscripten_glVertexAttrib4d, "_emscripten_glVertexAttrib4dv": _emscripten_glVertexAttrib4dv, "_emscripten_glVertexAttrib4f": _emscripten_glVertexAttrib4f, "_emscripten_glVertexAttrib4fv": _emscripten_glVertexAttrib4fv, "_emscripten_glVertexAttrib4iv": _emscripten_glVertexAttrib4iv, "_emscripten_glVertexAttrib4s": _emscripten_glVertexAttrib4s, "_emscripten_glVertexAttrib4sv": _emscripten_glVertexAttrib4sv, "_emscripten_glVertexAttrib4ubv": _emscripten_glVertexAttrib4ubv, "_emscripten_glVertexAttrib4uiv": _emscripten_glVertexAttrib4uiv, "_emscripten_glVertexAttrib4usv": _emscripten_glVertexAttrib4usv, "_emscripten_glVertexAttribDivisor": _emscripten_glVertexAttribDivisor, "_emscripten_glVertexAttribI1i": _emscripten_glVertexAttribI1i, "_emscripten_glVertexAttribI1iv": _emscripten_glVertexAttribI1iv, "_emscripten_glVertexAttribI1ui": _emscripten_glVertexAttribI1ui, "_emscripten_glVertexAttribI1uiv": _emscripten_glVertexAttribI1uiv, "_emscripten_glVertexAttribI2i": _emscripten_glVertexAttribI2i, "_emscripten_glVertexAttribI2iv": _emscripten_glVertexAttribI2iv, "_emscripten_glVertexAttribI2ui": _emscripten_glVertexAttribI2ui, "_emscripten_glVertexAttribI2uiv": _emscripten_glVertexAttribI2uiv, "_emscripten_glVertexAttribI3i": _emscripten_glVertexAttribI3i, "_emscripten_glVertexAttribI3iv": _emscripten_glVertexAttribI3iv, "_emscripten_glVertexAttribI3ui": _emscripten_glVertexAttribI3ui, "_emscripten_glVertexAttribI3uiv": _emscripten_glVertexAttribI3uiv, "_emscripten_glVertexAttribI4bv": _emscripten_glVertexAttribI4bv, "_emscripten_glVertexAttribI4i": _emscripten_glVertexAttribI4i, "_emscripten_glVertexAttribI4iv": _emscripten_glVertexAttribI4iv, "_emscripten_glVertexAttribI4sv": _emscripten_glVertexAttribI4sv, "_emscripten_glVertexAttribI4ubv": _emscripten_glVertexAttribI4ubv, "_emscripten_glVertexAttribI4ui": _emscripten_glVertexAttribI4ui, "_emscripten_glVertexAttribI4uiv": _emscripten_glVertexAttribI4uiv, "_emscripten_glVertexAttribI4usv": _emscripten_glVertexAttribI4usv, "_emscripten_glVertexAttribIPointer": _emscripten_glVertexAttribIPointer, "_emscripten_glVertexAttribPointer": _emscripten_glVertexAttribPointer, "_emscripten_glViewport": _emscripten_glViewport, "_emscripten_glWindowPos2d": _emscripten_glWindowPos2d, "_emscripten_glWindowPos2dv": _emscripten_glWindowPos2dv, "_emscripten_glWindowPos2f": _emscripten_glWindowPos2f, "_emscripten_glWindowPos2fv": _emscripten_glWindowPos2fv, "_emscripten_glWindowPos2i": _emscripten_glWindowPos2i, "_emscripten_glWindowPos2iv": _emscripten_glWindowPos2iv, "_emscripten_glWindowPos2s": _emscripten_glWindowPos2s, "_emscripten_glWindowPos2sv": _emscripten_glWindowPos2sv, "_emscripten_glWindowPos3d": _emscripten_glWindowPos3d, "_emscripten_glWindowPos3dv": _emscripten_glWindowPos3dv, "_emscripten_glWindowPos3f": _emscripten_glWindowPos3f, "_emscripten_glWindowPos3fv": _emscripten_glWindowPos3fv, "_emscripten_glWindowPos3i": _emscripten_glWindowPos3i, "_emscripten_glWindowPos3iv": _emscripten_glWindowPos3iv, "_emscripten_glWindowPos3s": _emscripten_glWindowPos3s, "_emscripten_glWindowPos3sv": _emscripten_glWindowPos3sv, "_emscripten_memcpy_big": _emscripten_memcpy_big, "_emscripten_resize_heap": _emscripten_resize_heap, "_emscripten_set_canvas_size": _emscripten_set_canvas_size, "_emscripten_set_keydown_callback_on_thread": _emscripten_set_keydown_callback_on_thread, "_emscripten_set_keypress_callback_on_thread": _emscripten_set_keypress_callback_on_thread, "_emscripten_set_keyup_callback_on_thread": _emscripten_set_keyup_callback_on_thread, "_emscripten_set_main_loop": _emscripten_set_main_loop, "_emscripten_set_main_loop_timing": _emscripten_set_main_loop_timing, "_getenv": _getenv, "_glActiveTexture": _glActiveTexture, "_glAttachShader": _glAttachShader, "_glBindBuffer": _glBindBuffer, "_glBindFramebuffer": _glBindFramebuffer, "_glBindRenderbuffer": _glBindRenderbuffer, "_glBindTexture": _glBindTexture, "_glBlendColor": _glBlendColor, "_glBlendEquationSeparate": _glBlendEquationSeparate, "_glBlendFuncSeparate": _glBlendFuncSeparate, "_glBufferData": _glBufferData, "_glBufferSubData": _glBufferSubData, "_glCheckFramebufferStatus": _glCheckFramebufferStatus, "_glClear": _glClear, "_glClearColor": _glClearColor, "_glClearDepthf": _glClearDepthf, "_glClearStencil": _glClearStencil, "_glColorMask": _glColorMask, "_glCompileShader": _glCompileShader, "_glCompressedTexImage2D": _glCompressedTexImage2D, "_glCompressedTexSubImage2D": _glCompressedTexSubImage2D, "_glCreateProgram": _glCreateProgram, "_glCreateShader": _glCreateShader, "_glCullFace": _glCullFace, "_glDeleteBuffers": _glDeleteBuffers, "_glDeleteFramebuffers": _glDeleteFramebuffers, "_glDeleteProgram": _glDeleteProgram, "_glDeleteRenderbuffers": _glDeleteRenderbuffers, "_glDeleteShader": _glDeleteShader, "_glDeleteTextures": _glDeleteTextures, "_glDepthFunc": _glDepthFunc, "_glDepthMask": _glDepthMask, "_glDetachShader": _glDetachShader, "_glDisable": _glDisable, "_glDisableVertexAttribArray": _glDisableVertexAttribArray, "_glDrawArrays": _glDrawArrays, "_glDrawElements": _glDrawElements, "_glEnable": _glEnable, "_glEnableVertexAttribArray": _glEnableVertexAttribArray, "_glFlush": _glFlush, "_glFramebufferRenderbuffer": _glFramebufferRenderbuffer, "_glFramebufferTexture2D": _glFramebufferTexture2D, "_glFrontFace": _glFrontFace, "_glGenBuffers": _glGenBuffers, "_glGenFramebuffers": _glGenFramebuffers, "_glGenRenderbuffers": _glGenRenderbuffers, "_glGenTextures": _glGenTextures, "_glGenerateMipmap": _glGenerateMipmap, "_glGetActiveAttrib": _glGetActiveAttrib, "_glGetActiveUniform": _glGetActiveUniform, "_glGetAttribLocation": _glGetAttribLocation, "_glGetError": _glGetError, "_glGetFloatv": _glGetFloatv, "_glGetIntegerv": _glGetIntegerv, "_glGetProgramInfoLog": _glGetProgramInfoLog, "_glGetProgramiv": _glGetProgramiv, "_glGetShaderInfoLog": _glGetShaderInfoLog, "_glGetShaderiv": _glGetShaderiv, "_glGetString": _glGetString, "_glGetUniformLocation": _glGetUniformLocation, "_glLinkProgram": _glLinkProgram, "_glPixelStorei": _glPixelStorei, "_glReadPixels": _glReadPixels, "_glRenderbufferStorage": _glRenderbufferStorage, "_glScissor": _glScissor, "_glShaderSource": _glShaderSource, "_glStencilFuncSeparate": _glStencilFuncSeparate, "_glStencilOpSeparate": _glStencilOpSeparate, "_glTexImage2D": _glTexImage2D, "_glTexParameterf": _glTexParameterf, "_glTexParameterfv": _glTexParameterfv, "_glTexParameteri": _glTexParameteri, "_glTexSubImage2D": _glTexSubImage2D, "_glUniform1i": _glUniform1i, "_glUniform1iv": _glUniform1iv, "_glUniform4fv": _glUniform4fv, "_glUniformMatrix3fv": _glUniformMatrix3fv, "_glUniformMatrix4fv": _glUniformMatrix4fv, "_glUseProgram": _glUseProgram, "_glVertexAttribPointer": _glVertexAttribPointer, "_glViewport": _glViewport, "_llvm_cos_f32": _llvm_cos_f32, "_llvm_sin_f32": _llvm_sin_f32, "_llvm_stackrestore": _llvm_stackrestore, "_llvm_stacksave": _llvm_stacksave, "_llvm_trap": _llvm_trap, "_longjmp": _longjmp, "_nanosleep": _nanosleep, "_pthread_cond_wait": _pthread_cond_wait, "_pthread_getspecific": _pthread_getspecific, "_pthread_key_create": _pthread_key_create, "_pthread_once": _pthread_once, "_pthread_setspecific": _pthread_setspecific, "_strftime": _strftime, "_strftime_l": _strftime_l, "_time": _time, "_usleep": _usleep, "emscriptenWebGLGet": emscriptenWebGLGet, "emscriptenWebGLGetTexPixelData": emscriptenWebGLGetTexPixelData, "emscriptenWebGLGetUniform": emscriptenWebGLGetUniform, "emscriptenWebGLGetVertexAttrib": emscriptenWebGLGetVertexAttrib, "stringToNewUTF8": stringToNewUTF8, "DYNAMICTOP_PTR": DYNAMICTOP_PTR, "tempDoublePtr": tempDoublePtr };
+Module.asmLibraryArg = { "abort": abort, "assert": assert, "setTempRet0": setTempRet0, "getTempRet0": getTempRet0, "abortOnCannotGrowMemory": abortOnCannotGrowMemory, "abortStackOverflow": abortStackOverflow, "nullFunc_i": nullFunc_i, "nullFunc_ii": nullFunc_ii, "nullFunc_iii": nullFunc_iii, "nullFunc_iiii": nullFunc_iiii, "nullFunc_iiiii": nullFunc_iiiii, "nullFunc_iiiiid": nullFunc_iiiiid, "nullFunc_iiiiii": nullFunc_iiiiii, "nullFunc_iiiiiid": nullFunc_iiiiiid, "nullFunc_iiiiiii": nullFunc_iiiiiii, "nullFunc_iiiiiiii": nullFunc_iiiiiiii, "nullFunc_iiiiiiiii": nullFunc_iiiiiiiii, "nullFunc_iiiiiiiiii": nullFunc_iiiiiiiiii, "nullFunc_iiiiij": nullFunc_iiiiij, "nullFunc_iiiiji": nullFunc_iiiiji, "nullFunc_iij": nullFunc_iij, "nullFunc_iiji": nullFunc_iiji, "nullFunc_iijii": nullFunc_iijii, "nullFunc_ji": nullFunc_ji, "nullFunc_jiij": nullFunc_jiij, "nullFunc_jij": nullFunc_jij, "nullFunc_jiji": nullFunc_jiji, "nullFunc_v": nullFunc_v, "nullFunc_vd": nullFunc_vd, "nullFunc_vdd": nullFunc_vdd, "nullFunc_vddd": nullFunc_vddd, "nullFunc_vdddd": nullFunc_vdddd, "nullFunc_vf": nullFunc_vf, "nullFunc_vff": nullFunc_vff, "nullFunc_vfff": nullFunc_vfff, "nullFunc_vffff": nullFunc_vffff, "nullFunc_vfi": nullFunc_vfi, "nullFunc_vi": nullFunc_vi, "nullFunc_vid": nullFunc_vid, "nullFunc_vidd": nullFunc_vidd, "nullFunc_viddd": nullFunc_viddd, "nullFunc_vidddd": nullFunc_vidddd, "nullFunc_viddidd": nullFunc_viddidd, "nullFunc_viddiiddiii": nullFunc_viddiiddiii, "nullFunc_viddiii": nullFunc_viddiii, "nullFunc_vif": nullFunc_vif, "nullFunc_viff": nullFunc_viff, "nullFunc_vifff": nullFunc_vifff, "nullFunc_viffff": nullFunc_viffff, "nullFunc_viffiff": nullFunc_viffiff, "nullFunc_viffiiffiii": nullFunc_viffiiffiii, "nullFunc_viffiii": nullFunc_viffiii, "nullFunc_vii": nullFunc_vii, "nullFunc_viidddd": nullFunc_viidddd, "nullFunc_viif": nullFunc_viif, "nullFunc_viiffff": nullFunc_viiffff, "nullFunc_viiffffi": nullFunc_viiffffi, "nullFunc_viifi": nullFunc_viifi, "nullFunc_viii": nullFunc_viii, "nullFunc_viiii": nullFunc_viiii, "nullFunc_viiiii": nullFunc_viiiii, "nullFunc_viiiiii": nullFunc_viiiiii, "nullFunc_viiiiiii": nullFunc_viiiiiii, "nullFunc_viiiiiiii": nullFunc_viiiiiiii, "nullFunc_viiiiiiiii": nullFunc_viiiiiiiii, "nullFunc_viiiiiiiiii": nullFunc_viiiiiiiiii, "nullFunc_viiiiiiiiiii": nullFunc_viiiiiiiiiii, "nullFunc_viiiiiiiiiiiiiii": nullFunc_viiiiiiiiiiiiiii, "nullFunc_viij": nullFunc_viij, "nullFunc_viijii": nullFunc_viijii, "nullFunc_vij": nullFunc_vij, "nullFunc_vijii": nullFunc_vijii, "nullFunc_vijjiii": nullFunc_vijjiii, "invoke_iii": invoke_iii, "invoke_iiii": invoke_iiii, "invoke_iiiii": invoke_iiiii, "invoke_vi": invoke_vi, "invoke_viiii": invoke_viiii, "___assert_fail": ___assert_fail, "___buildEnvironment": ___buildEnvironment, "___cxa_allocate_exception": ___cxa_allocate_exception, "___cxa_begin_catch": ___cxa_begin_catch, "___cxa_find_matching_catch": ___cxa_find_matching_catch, "___cxa_free_exception": ___cxa_free_exception, "___cxa_pure_virtual": ___cxa_pure_virtual, "___cxa_throw": ___cxa_throw, "___cxa_uncaught_exception": ___cxa_uncaught_exception, "___gxx_personality_v0": ___gxx_personality_v0, "___lock": ___lock, "___map_file": ___map_file, "___resumeException": ___resumeException, "___setErrNo": ___setErrNo, "___syscall140": ___syscall140, "___syscall145": ___syscall145, "___syscall146": ___syscall146, "___syscall221": ___syscall221, "___syscall5": ___syscall5, "___syscall54": ___syscall54, "___syscall6": ___syscall6, "___syscall91": ___syscall91, "___unlock": ___unlock, "__addDays": __addDays, "__arraySum": __arraySum, "__computeUnpackAlignedImageSize": __computeUnpackAlignedImageSize, "__exit": __exit, "__glGenObject": __glGenObject, "__isLeapYear": __isLeapYear, "_abort": _abort, "_alBufferData": _alBufferData, "_alDeleteBuffers": _alDeleteBuffers, "_alDeleteSources": _alDeleteSources, "_alGenBuffers": _alGenBuffers, "_alGenSources": _alGenSources, "_alGetEnumValue": _alGetEnumValue, "_alGetError": _alGetError, "_alGetSourcei": _alGetSourcei, "_alListener3f": _alListener3f, "_alListenerf": _alListenerf, "_alListenerfv": _alListenerfv, "_alSourcePause": _alSourcePause, "_alSourcePlay": _alSourcePlay, "_alSourceStop": _alSourceStop, "_alSourcei": _alSourcei, "_alcCloseDevice": _alcCloseDevice, "_alcCreateContext": _alcCreateContext, "_alcDestroyContext": _alcDestroyContext, "_alcMakeContextCurrent": _alcMakeContextCurrent, "_alcOpenDevice": _alcOpenDevice, "_clock_gettime": _clock_gettime, "_eglChooseConfig": _eglChooseConfig, "_eglCreateContext": _eglCreateContext, "_eglCreateWindowSurface": _eglCreateWindowSurface, "_eglDestroyContext": _eglDestroyContext, "_eglDestroySurface": _eglDestroySurface, "_eglGetDisplay": _eglGetDisplay, "_eglGetProcAddress": _eglGetProcAddress, "_eglInitialize": _eglInitialize, "_eglMakeCurrent": _eglMakeCurrent, "_eglQueryString": _eglQueryString, "_eglSwapBuffers": _eglSwapBuffers, "_eglSwapInterval": _eglSwapInterval, "_eglTerminate": _eglTerminate, "_emscripten_get_heap_size": _emscripten_get_heap_size, "_emscripten_get_now": _emscripten_get_now, "_emscripten_get_now_is_monotonic": _emscripten_get_now_is_monotonic, "_emscripten_glAccum": _emscripten_glAccum, "_emscripten_glActiveTexture": _emscripten_glActiveTexture, "_emscripten_glAreTexturesResident": _emscripten_glAreTexturesResident, "_emscripten_glArrayElement": _emscripten_glArrayElement, "_emscripten_glAttachObjectARB": _emscripten_glAttachObjectARB, "_emscripten_glAttachShader": _emscripten_glAttachShader, "_emscripten_glBeginConditionalRender": _emscripten_glBeginConditionalRender, "_emscripten_glBeginQuery": _emscripten_glBeginQuery, "_emscripten_glBeginTransformFeedback": _emscripten_glBeginTransformFeedback, "_emscripten_glBindAttribLocation": _emscripten_glBindAttribLocation, "_emscripten_glBindBuffer": _emscripten_glBindBuffer, "_emscripten_glBindBufferBase": _emscripten_glBindBufferBase, "_emscripten_glBindBufferRange": _emscripten_glBindBufferRange, "_emscripten_glBindFragDataLocation": _emscripten_glBindFragDataLocation, "_emscripten_glBindFramebuffer": _emscripten_glBindFramebuffer, "_emscripten_glBindProgramARB": _emscripten_glBindProgramARB, "_emscripten_glBindRenderbuffer": _emscripten_glBindRenderbuffer, "_emscripten_glBindTexture": _emscripten_glBindTexture, "_emscripten_glBindVertexArray": _emscripten_glBindVertexArray, "_emscripten_glBitmap": _emscripten_glBitmap, "_emscripten_glBlendColor": _emscripten_glBlendColor, "_emscripten_glBlendEquation": _emscripten_glBlendEquation, "_emscripten_glBlendEquationSeparate": _emscripten_glBlendEquationSeparate, "_emscripten_glBlendFunc": _emscripten_glBlendFunc, "_emscripten_glBlendFuncSeparate": _emscripten_glBlendFuncSeparate, "_emscripten_glBlitFramebuffer": _emscripten_glBlitFramebuffer, "_emscripten_glBufferData": _emscripten_glBufferData, "_emscripten_glBufferSubData": _emscripten_glBufferSubData, "_emscripten_glCallList": _emscripten_glCallList, "_emscripten_glCallLists": _emscripten_glCallLists, "_emscripten_glCheckFramebufferStatus": _emscripten_glCheckFramebufferStatus, "_emscripten_glClampColor": _emscripten_glClampColor, "_emscripten_glClear": _emscripten_glClear, "_emscripten_glClearAccum": _emscripten_glClearAccum, "_emscripten_glClearBufferfi": _emscripten_glClearBufferfi, "_emscripten_glClearBufferfv": _emscripten_glClearBufferfv, "_emscripten_glClearBufferiv": _emscripten_glClearBufferiv, "_emscripten_glClearBufferuiv": _emscripten_glClearBufferuiv, "_emscripten_glClearColor": _emscripten_glClearColor, "_emscripten_glClearDepth": _emscripten_glClearDepth, "_emscripten_glClearDepthf": _emscripten_glClearDepthf, "_emscripten_glClearIndex": _emscripten_glClearIndex, "_emscripten_glClearStencil": _emscripten_glClearStencil, "_emscripten_glClipPlane": _emscripten_glClipPlane, "_emscripten_glColorMask": _emscripten_glColorMask, "_emscripten_glColorMaski": _emscripten_glColorMaski, "_emscripten_glColorMaterial": _emscripten_glColorMaterial, "_emscripten_glColorSubTable": _emscripten_glColorSubTable, "_emscripten_glColorTable": _emscripten_glColorTable, "_emscripten_glColorTableParameterfv": _emscripten_glColorTableParameterfv, "_emscripten_glColorTableParameteriv": _emscripten_glColorTableParameteriv, "_emscripten_glCompileShader": _emscripten_glCompileShader, "_emscripten_glCompressedTexImage1D": _emscripten_glCompressedTexImage1D, "_emscripten_glCompressedTexImage2D": _emscripten_glCompressedTexImage2D, "_emscripten_glCompressedTexImage3D": _emscripten_glCompressedTexImage3D, "_emscripten_glCompressedTexSubImage1D": _emscripten_glCompressedTexSubImage1D, "_emscripten_glCompressedTexSubImage2D": _emscripten_glCompressedTexSubImage2D, "_emscripten_glCompressedTexSubImage3D": _emscripten_glCompressedTexSubImage3D, "_emscripten_glConvolutionFilter1D": _emscripten_glConvolutionFilter1D, "_emscripten_glConvolutionFilter2D": _emscripten_glConvolutionFilter2D, "_emscripten_glConvolutionParameterf": _emscripten_glConvolutionParameterf, "_emscripten_glConvolutionParameterfv": _emscripten_glConvolutionParameterfv, "_emscripten_glConvolutionParameteri": _emscripten_glConvolutionParameteri, "_emscripten_glConvolutionParameteriv": _emscripten_glConvolutionParameteriv, "_emscripten_glCopyColorSubTable": _emscripten_glCopyColorSubTable, "_emscripten_glCopyColorTable": _emscripten_glCopyColorTable, "_emscripten_glCopyConvolutionFilter1D": _emscripten_glCopyConvolutionFilter1D, "_emscripten_glCopyConvolutionFilter2D": _emscripten_glCopyConvolutionFilter2D, "_emscripten_glCopyPixels": _emscripten_glCopyPixels, "_emscripten_glCopyTexImage1D": _emscripten_glCopyTexImage1D, "_emscripten_glCopyTexImage2D": _emscripten_glCopyTexImage2D, "_emscripten_glCopyTexSubImage1D": _emscripten_glCopyTexSubImage1D, "_emscripten_glCopyTexSubImage2D": _emscripten_glCopyTexSubImage2D, "_emscripten_glCopyTexSubImage3D": _emscripten_glCopyTexSubImage3D, "_emscripten_glCreateProgram": _emscripten_glCreateProgram, "_emscripten_glCreateProgramObjectARB": _emscripten_glCreateProgramObjectARB, "_emscripten_glCreateShader": _emscripten_glCreateShader, "_emscripten_glCreateShaderObjectARB": _emscripten_glCreateShaderObjectARB, "_emscripten_glCullFace": _emscripten_glCullFace, "_emscripten_glDeleteBuffers": _emscripten_glDeleteBuffers, "_emscripten_glDeleteFramebuffers": _emscripten_glDeleteFramebuffers, "_emscripten_glDeleteLists": _emscripten_glDeleteLists, "_emscripten_glDeleteProgram": _emscripten_glDeleteProgram, "_emscripten_glDeleteProgramsARB": _emscripten_glDeleteProgramsARB, "_emscripten_glDeleteQueries": _emscripten_glDeleteQueries, "_emscripten_glDeleteRenderbuffers": _emscripten_glDeleteRenderbuffers, "_emscripten_glDeleteShader": _emscripten_glDeleteShader, "_emscripten_glDeleteTextures": _emscripten_glDeleteTextures, "_emscripten_glDeleteVertexArrays": _emscripten_glDeleteVertexArrays, "_emscripten_glDepthFunc": _emscripten_glDepthFunc, "_emscripten_glDepthMask": _emscripten_glDepthMask, "_emscripten_glDepthRange": _emscripten_glDepthRange, "_emscripten_glDepthRangef": _emscripten_glDepthRangef, "_emscripten_glDetachObjectARB": _emscripten_glDetachObjectARB, "_emscripten_glDetachShader": _emscripten_glDetachShader, "_emscripten_glDisable": _emscripten_glDisable, "_emscripten_glDisableVertexAttribArray": _emscripten_glDisableVertexAttribArray, "_emscripten_glDisablei": _emscripten_glDisablei, "_emscripten_glDrawArrays": _emscripten_glDrawArrays, "_emscripten_glDrawArraysInstanced": _emscripten_glDrawArraysInstanced, "_emscripten_glDrawBuffers": _emscripten_glDrawBuffers, "_emscripten_glDrawElements": _emscripten_glDrawElements, "_emscripten_glDrawElementsInstanced": _emscripten_glDrawElementsInstanced, "_emscripten_glDrawPixels": _emscripten_glDrawPixels, "_emscripten_glDrawRangeElements": _emscripten_glDrawRangeElements, "_emscripten_glEdgeFlag": _emscripten_glEdgeFlag, "_emscripten_glEdgeFlagPointer": _emscripten_glEdgeFlagPointer, "_emscripten_glEdgeFlagv": _emscripten_glEdgeFlagv, "_emscripten_glEnable": _emscripten_glEnable, "_emscripten_glEnableVertexAttribArray": _emscripten_glEnableVertexAttribArray, "_emscripten_glEnablei": _emscripten_glEnablei, "_emscripten_glEndConditionalRender": _emscripten_glEndConditionalRender, "_emscripten_glEndList": _emscripten_glEndList, "_emscripten_glEndQuery": _emscripten_glEndQuery, "_emscripten_glEndTransformFeedback": _emscripten_glEndTransformFeedback, "_emscripten_glEvalCoord1d": _emscripten_glEvalCoord1d, "_emscripten_glEvalCoord1dv": _emscripten_glEvalCoord1dv, "_emscripten_glEvalCoord1f": _emscripten_glEvalCoord1f, "_emscripten_glEvalCoord1fv": _emscripten_glEvalCoord1fv, "_emscripten_glEvalCoord2d": _emscripten_glEvalCoord2d, "_emscripten_glEvalCoord2dv": _emscripten_glEvalCoord2dv, "_emscripten_glEvalCoord2f": _emscripten_glEvalCoord2f, "_emscripten_glEvalCoord2fv": _emscripten_glEvalCoord2fv, "_emscripten_glEvalMesh1": _emscripten_glEvalMesh1, "_emscripten_glEvalMesh2": _emscripten_glEvalMesh2, "_emscripten_glEvalPoint1": _emscripten_glEvalPoint1, "_emscripten_glEvalPoint2": _emscripten_glEvalPoint2, "_emscripten_glFeedbackBuffer": _emscripten_glFeedbackBuffer, "_emscripten_glFinish": _emscripten_glFinish, "_emscripten_glFlush": _emscripten_glFlush, "_emscripten_glFogf": _emscripten_glFogf, "_emscripten_glFogfv": _emscripten_glFogfv, "_emscripten_glFogi": _emscripten_glFogi, "_emscripten_glFogiv": _emscripten_glFogiv, "_emscripten_glFramebufferRenderbuffer": _emscripten_glFramebufferRenderbuffer, "_emscripten_glFramebufferTexture1D": _emscripten_glFramebufferTexture1D, "_emscripten_glFramebufferTexture2D": _emscripten_glFramebufferTexture2D, "_emscripten_glFramebufferTexture3D": _emscripten_glFramebufferTexture3D, "_emscripten_glFramebufferTextureLayer": _emscripten_glFramebufferTextureLayer, "_emscripten_glFrontFace": _emscripten_glFrontFace, "_emscripten_glGenBuffers": _emscripten_glGenBuffers, "_emscripten_glGenFramebuffers": _emscripten_glGenFramebuffers, "_emscripten_glGenLists": _emscripten_glGenLists, "_emscripten_glGenProgramsARB": _emscripten_glGenProgramsARB, "_emscripten_glGenQueries": _emscripten_glGenQueries, "_emscripten_glGenRenderbuffers": _emscripten_glGenRenderbuffers, "_emscripten_glGenTextures": _emscripten_glGenTextures, "_emscripten_glGenVertexArrays": _emscripten_glGenVertexArrays, "_emscripten_glGenerateMipmap": _emscripten_glGenerateMipmap, "_emscripten_glGetActiveAttrib": _emscripten_glGetActiveAttrib, "_emscripten_glGetActiveUniform": _emscripten_glGetActiveUniform, "_emscripten_glGetActiveUniformBlockName": _emscripten_glGetActiveUniformBlockName, "_emscripten_glGetActiveUniformBlockiv": _emscripten_glGetActiveUniformBlockiv, "_emscripten_glGetActiveUniformName": _emscripten_glGetActiveUniformName, "_emscripten_glGetActiveUniformsiv": _emscripten_glGetActiveUniformsiv, "_emscripten_glGetAttachedObjectsARB": _emscripten_glGetAttachedObjectsARB, "_emscripten_glGetAttachedShaders": _emscripten_glGetAttachedShaders, "_emscripten_glGetAttribLocation": _emscripten_glGetAttribLocation, "_emscripten_glGetBooleani_v": _emscripten_glGetBooleani_v, "_emscripten_glGetBooleanv": _emscripten_glGetBooleanv, "_emscripten_glGetBufferParameteriv": _emscripten_glGetBufferParameteriv, "_emscripten_glGetBufferPointerv": _emscripten_glGetBufferPointerv, "_emscripten_glGetBufferSubData": _emscripten_glGetBufferSubData, "_emscripten_glGetClipPlane": _emscripten_glGetClipPlane, "_emscripten_glGetColorTable": _emscripten_glGetColorTable, "_emscripten_glGetColorTableParameterfv": _emscripten_glGetColorTableParameterfv, "_emscripten_glGetColorTableParameteriv": _emscripten_glGetColorTableParameteriv, "_emscripten_glGetCompressedTexImage": _emscripten_glGetCompressedTexImage, "_emscripten_glGetConvolutionFilter": _emscripten_glGetConvolutionFilter, "_emscripten_glGetConvolutionParameterfv": _emscripten_glGetConvolutionParameterfv, "_emscripten_glGetConvolutionParameteriv": _emscripten_glGetConvolutionParameteriv, "_emscripten_glGetDoublev": _emscripten_glGetDoublev, "_emscripten_glGetError": _emscripten_glGetError, "_emscripten_glGetFloatv": _emscripten_glGetFloatv, "_emscripten_glGetFragDataLocation": _emscripten_glGetFragDataLocation, "_emscripten_glGetFramebufferAttachmentParameteriv": _emscripten_glGetFramebufferAttachmentParameteriv, "_emscripten_glGetHandleARB": _emscripten_glGetHandleARB, "_emscripten_glGetHistogram": _emscripten_glGetHistogram, "_emscripten_glGetHistogramParameterfv": _emscripten_glGetHistogramParameterfv, "_emscripten_glGetHistogramParameteriv": _emscripten_glGetHistogramParameteriv, "_emscripten_glGetIntegeri_v": _emscripten_glGetIntegeri_v, "_emscripten_glGetIntegerv": _emscripten_glGetIntegerv, "_emscripten_glGetLightfv": _emscripten_glGetLightfv, "_emscripten_glGetLightiv": _emscripten_glGetLightiv, "_emscripten_glGetMapdv": _emscripten_glGetMapdv, "_emscripten_glGetMapfv": _emscripten_glGetMapfv, "_emscripten_glGetMapiv": _emscripten_glGetMapiv, "_emscripten_glGetMaterialfv": _emscripten_glGetMaterialfv, "_emscripten_glGetMaterialiv": _emscripten_glGetMaterialiv, "_emscripten_glGetMinmax": _emscripten_glGetMinmax, "_emscripten_glGetMinmaxParameterfv": _emscripten_glGetMinmaxParameterfv, "_emscripten_glGetMinmaxParameteriv": _emscripten_glGetMinmaxParameteriv, "_emscripten_glGetObjectParameterfvARB": _emscripten_glGetObjectParameterfvARB, "_emscripten_glGetObjectParameterivARB": _emscripten_glGetObjectParameterivARB, "_emscripten_glGetPixelMapfv": _emscripten_glGetPixelMapfv, "_emscripten_glGetPixelMapuiv": _emscripten_glGetPixelMapuiv, "_emscripten_glGetPixelMapusv": _emscripten_glGetPixelMapusv, "_emscripten_glGetPointerv": _emscripten_glGetPointerv, "_emscripten_glGetPolygonStipple": _emscripten_glGetPolygonStipple, "_emscripten_glGetProgramEnvParameterdvARB": _emscripten_glGetProgramEnvParameterdvARB, "_emscripten_glGetProgramEnvParameterfvARB": _emscripten_glGetProgramEnvParameterfvARB, "_emscripten_glGetProgramInfoLog": _emscripten_glGetProgramInfoLog, "_emscripten_glGetProgramLocalParameterdvARB": _emscripten_glGetProgramLocalParameterdvARB, "_emscripten_glGetProgramLocalParameterfvARB": _emscripten_glGetProgramLocalParameterfvARB, "_emscripten_glGetProgramStringARB": _emscripten_glGetProgramStringARB, "_emscripten_glGetProgramiv": _emscripten_glGetProgramiv, "_emscripten_glGetQueryObjectiv": _emscripten_glGetQueryObjectiv, "_emscripten_glGetQueryObjectuiv": _emscripten_glGetQueryObjectuiv, "_emscripten_glGetQueryiv": _emscripten_glGetQueryiv, "_emscripten_glGetRenderbufferParameteriv": _emscripten_glGetRenderbufferParameteriv, "_emscripten_glGetSeparableFilter": _emscripten_glGetSeparableFilter, "_emscripten_glGetShaderInfoLog": _emscripten_glGetShaderInfoLog, "_emscripten_glGetShaderPrecisionFormat": _emscripten_glGetShaderPrecisionFormat, "_emscripten_glGetShaderSource": _emscripten_glGetShaderSource, "_emscripten_glGetShaderiv": _emscripten_glGetShaderiv, "_emscripten_glGetString": _emscripten_glGetString, "_emscripten_glGetStringi": _emscripten_glGetStringi, "_emscripten_glGetTexGendv": _emscripten_glGetTexGendv, "_emscripten_glGetTexGenfv": _emscripten_glGetTexGenfv, "_emscripten_glGetTexGeniv": _emscripten_glGetTexGeniv, "_emscripten_glGetTexImage": _emscripten_glGetTexImage, "_emscripten_glGetTexParameterIiv": _emscripten_glGetTexParameterIiv, "_emscripten_glGetTexParameterIuiv": _emscripten_glGetTexParameterIuiv, "_emscripten_glGetTexParameterfv": _emscripten_glGetTexParameterfv, "_emscripten_glGetTexParameteriv": _emscripten_glGetTexParameteriv, "_emscripten_glGetTransformFeedbackVarying": _emscripten_glGetTransformFeedbackVarying, "_emscripten_glGetUniformBlockIndex": _emscripten_glGetUniformBlockIndex, "_emscripten_glGetUniformIndices": _emscripten_glGetUniformIndices, "_emscripten_glGetUniformLocation": _emscripten_glGetUniformLocation, "_emscripten_glGetUniformfv": _emscripten_glGetUniformfv, "_emscripten_glGetUniformiv": _emscripten_glGetUniformiv, "_emscripten_glGetUniformuiv": _emscripten_glGetUniformuiv, "_emscripten_glGetVertexAttribIiv": _emscripten_glGetVertexAttribIiv, "_emscripten_glGetVertexAttribIuiv": _emscripten_glGetVertexAttribIuiv, "_emscripten_glGetVertexAttribPointerv": _emscripten_glGetVertexAttribPointerv, "_emscripten_glGetVertexAttribdv": _emscripten_glGetVertexAttribdv, "_emscripten_glGetVertexAttribfv": _emscripten_glGetVertexAttribfv, "_emscripten_glGetVertexAttribiv": _emscripten_glGetVertexAttribiv, "_emscripten_glHint": _emscripten_glHint, "_emscripten_glHistogram": _emscripten_glHistogram, "_emscripten_glIndexMask": _emscripten_glIndexMask, "_emscripten_glIndexPointer": _emscripten_glIndexPointer, "_emscripten_glIndexd": _emscripten_glIndexd, "_emscripten_glIndexdv": _emscripten_glIndexdv, "_emscripten_glIndexf": _emscripten_glIndexf, "_emscripten_glIndexfv": _emscripten_glIndexfv, "_emscripten_glIndexi": _emscripten_glIndexi, "_emscripten_glIndexiv": _emscripten_glIndexiv, "_emscripten_glIndexs": _emscripten_glIndexs, "_emscripten_glIndexsv": _emscripten_glIndexsv, "_emscripten_glIndexub": _emscripten_glIndexub, "_emscripten_glIndexubv": _emscripten_glIndexubv, "_emscripten_glInitNames": _emscripten_glInitNames, "_emscripten_glInterleavedArrays": _emscripten_glInterleavedArrays, "_emscripten_glIsBuffer": _emscripten_glIsBuffer, "_emscripten_glIsEnabled": _emscripten_glIsEnabled, "_emscripten_glIsEnabledi": _emscripten_glIsEnabledi, "_emscripten_glIsFramebuffer": _emscripten_glIsFramebuffer, "_emscripten_glIsList": _emscripten_glIsList, "_emscripten_glIsProgram": _emscripten_glIsProgram, "_emscripten_glIsQuery": _emscripten_glIsQuery, "_emscripten_glIsRenderbuffer": _emscripten_glIsRenderbuffer, "_emscripten_glIsShader": _emscripten_glIsShader, "_emscripten_glIsTexture": _emscripten_glIsTexture, "_emscripten_glIsVertexArray": _emscripten_glIsVertexArray, "_emscripten_glLineStipple": _emscripten_glLineStipple, "_emscripten_glLineWidth": _emscripten_glLineWidth, "_emscripten_glLinkProgram": _emscripten_glLinkProgram, "_emscripten_glListBase": _emscripten_glListBase, "_emscripten_glLoadName": _emscripten_glLoadName, "_emscripten_glLoadTransposeMatrixd": _emscripten_glLoadTransposeMatrixd, "_emscripten_glLoadTransposeMatrixf": _emscripten_glLoadTransposeMatrixf, "_emscripten_glLogicOp": _emscripten_glLogicOp, "_emscripten_glMap1d": _emscripten_glMap1d, "_emscripten_glMap1f": _emscripten_glMap1f, "_emscripten_glMap2d": _emscripten_glMap2d, "_emscripten_glMap2f": _emscripten_glMap2f, "_emscripten_glMapBuffer": _emscripten_glMapBuffer, "_emscripten_glMapGrid1d": _emscripten_glMapGrid1d, "_emscripten_glMapGrid1f": _emscripten_glMapGrid1f, "_emscripten_glMapGrid2d": _emscripten_glMapGrid2d, "_emscripten_glMapGrid2f": _emscripten_glMapGrid2f, "_emscripten_glMinmax": _emscripten_glMinmax, "_emscripten_glMultTransposeMatrixd": _emscripten_glMultTransposeMatrixd, "_emscripten_glMultTransposeMatrixf": _emscripten_glMultTransposeMatrixf, "_emscripten_glMultiDrawArrays": _emscripten_glMultiDrawArrays, "_emscripten_glMultiDrawElements": _emscripten_glMultiDrawElements, "_emscripten_glMultiTexCoord1d": _emscripten_glMultiTexCoord1d, "_emscripten_glMultiTexCoord1dv": _emscripten_glMultiTexCoord1dv, "_emscripten_glMultiTexCoord1f": _emscripten_glMultiTexCoord1f, "_emscripten_glMultiTexCoord1fv": _emscripten_glMultiTexCoord1fv, "_emscripten_glMultiTexCoord1i": _emscripten_glMultiTexCoord1i, "_emscripten_glMultiTexCoord1iv": _emscripten_glMultiTexCoord1iv, "_emscripten_glMultiTexCoord1s": _emscripten_glMultiTexCoord1s, "_emscripten_glMultiTexCoord1sv": _emscripten_glMultiTexCoord1sv, "_emscripten_glMultiTexCoord2d": _emscripten_glMultiTexCoord2d, "_emscripten_glMultiTexCoord2dv": _emscripten_glMultiTexCoord2dv, "_emscripten_glMultiTexCoord2f": _emscripten_glMultiTexCoord2f, "_emscripten_glMultiTexCoord2fv": _emscripten_glMultiTexCoord2fv, "_emscripten_glMultiTexCoord2i": _emscripten_glMultiTexCoord2i, "_emscripten_glMultiTexCoord2iv": _emscripten_glMultiTexCoord2iv, "_emscripten_glMultiTexCoord2s": _emscripten_glMultiTexCoord2s, "_emscripten_glMultiTexCoord2sv": _emscripten_glMultiTexCoord2sv, "_emscripten_glMultiTexCoord3d": _emscripten_glMultiTexCoord3d, "_emscripten_glMultiTexCoord3dv": _emscripten_glMultiTexCoord3dv, "_emscripten_glMultiTexCoord3f": _emscripten_glMultiTexCoord3f, "_emscripten_glMultiTexCoord3fv": _emscripten_glMultiTexCoord3fv, "_emscripten_glMultiTexCoord3i": _emscripten_glMultiTexCoord3i, "_emscripten_glMultiTexCoord3iv": _emscripten_glMultiTexCoord3iv, "_emscripten_glMultiTexCoord3s": _emscripten_glMultiTexCoord3s, "_emscripten_glMultiTexCoord3sv": _emscripten_glMultiTexCoord3sv, "_emscripten_glMultiTexCoord4d": _emscripten_glMultiTexCoord4d, "_emscripten_glMultiTexCoord4dv": _emscripten_glMultiTexCoord4dv, "_emscripten_glMultiTexCoord4f": _emscripten_glMultiTexCoord4f, "_emscripten_glMultiTexCoord4fv": _emscripten_glMultiTexCoord4fv, "_emscripten_glMultiTexCoord4i": _emscripten_glMultiTexCoord4i, "_emscripten_glMultiTexCoord4iv": _emscripten_glMultiTexCoord4iv, "_emscripten_glMultiTexCoord4s": _emscripten_glMultiTexCoord4s, "_emscripten_glMultiTexCoord4sv": _emscripten_glMultiTexCoord4sv, "_emscripten_glNewList": _emscripten_glNewList, "_emscripten_glPassThrough": _emscripten_glPassThrough, "_emscripten_glPixelMapfv": _emscripten_glPixelMapfv, "_emscripten_glPixelMapuiv": _emscripten_glPixelMapuiv, "_emscripten_glPixelMapusv": _emscripten_glPixelMapusv, "_emscripten_glPixelStoref": _emscripten_glPixelStoref, "_emscripten_glPixelStorei": _emscripten_glPixelStorei, "_emscripten_glPixelTransferf": _emscripten_glPixelTransferf, "_emscripten_glPixelTransferi": _emscripten_glPixelTransferi, "_emscripten_glPixelZoom": _emscripten_glPixelZoom, "_emscripten_glPointParameterf": _emscripten_glPointParameterf, "_emscripten_glPointParameterfv": _emscripten_glPointParameterfv, "_emscripten_glPointParameteri": _emscripten_glPointParameteri, "_emscripten_glPointParameteriv": _emscripten_glPointParameteriv, "_emscripten_glPointSize": _emscripten_glPointSize, "_emscripten_glPolygonOffset": _emscripten_glPolygonOffset, "_emscripten_glPolygonStipple": _emscripten_glPolygonStipple, "_emscripten_glPopAttrib": _emscripten_glPopAttrib, "_emscripten_glPopClientAttrib": _emscripten_glPopClientAttrib, "_emscripten_glPopName": _emscripten_glPopName, "_emscripten_glPrimitiveRestartIndex": _emscripten_glPrimitiveRestartIndex, "_emscripten_glPrioritizeTextures": _emscripten_glPrioritizeTextures, "_emscripten_glProgramEnvParameter4dARB": _emscripten_glProgramEnvParameter4dARB, "_emscripten_glProgramEnvParameter4dvARB": _emscripten_glProgramEnvParameter4dvARB, "_emscripten_glProgramEnvParameter4fARB": _emscripten_glProgramEnvParameter4fARB, "_emscripten_glProgramEnvParameter4fvARB": _emscripten_glProgramEnvParameter4fvARB, "_emscripten_glProgramLocalParameter4dARB": _emscripten_glProgramLocalParameter4dARB, "_emscripten_glProgramLocalParameter4dvARB": _emscripten_glProgramLocalParameter4dvARB, "_emscripten_glProgramLocalParameter4fARB": _emscripten_glProgramLocalParameter4fARB, "_emscripten_glProgramLocalParameter4fvARB": _emscripten_glProgramLocalParameter4fvARB, "_emscripten_glProgramStringARB": _emscripten_glProgramStringARB, "_emscripten_glPushAttrib": _emscripten_glPushAttrib, "_emscripten_glPushClientAttrib": _emscripten_glPushClientAttrib, "_emscripten_glPushName": _emscripten_glPushName, "_emscripten_glRasterPos2d": _emscripten_glRasterPos2d, "_emscripten_glRasterPos2dv": _emscripten_glRasterPos2dv, "_emscripten_glRasterPos2f": _emscripten_glRasterPos2f, "_emscripten_glRasterPos2fv": _emscripten_glRasterPos2fv, "_emscripten_glRasterPos2i": _emscripten_glRasterPos2i, "_emscripten_glRasterPos2iv": _emscripten_glRasterPos2iv, "_emscripten_glRasterPos2s": _emscripten_glRasterPos2s, "_emscripten_glRasterPos2sv": _emscripten_glRasterPos2sv, "_emscripten_glRasterPos3d": _emscripten_glRasterPos3d, "_emscripten_glRasterPos3dv": _emscripten_glRasterPos3dv, "_emscripten_glRasterPos3f": _emscripten_glRasterPos3f, "_emscripten_glRasterPos3fv": _emscripten_glRasterPos3fv, "_emscripten_glRasterPos3i": _emscripten_glRasterPos3i, "_emscripten_glRasterPos3iv": _emscripten_glRasterPos3iv, "_emscripten_glRasterPos3s": _emscripten_glRasterPos3s, "_emscripten_glRasterPos3sv": _emscripten_glRasterPos3sv, "_emscripten_glRasterPos4d": _emscripten_glRasterPos4d, "_emscripten_glRasterPos4dv": _emscripten_glRasterPos4dv, "_emscripten_glRasterPos4f": _emscripten_glRasterPos4f, "_emscripten_glRasterPos4fv": _emscripten_glRasterPos4fv, "_emscripten_glRasterPos4i": _emscripten_glRasterPos4i, "_emscripten_glRasterPos4iv": _emscripten_glRasterPos4iv, "_emscripten_glRasterPos4s": _emscripten_glRasterPos4s, "_emscripten_glRasterPos4sv": _emscripten_glRasterPos4sv, "_emscripten_glReadPixels": _emscripten_glReadPixels, "_emscripten_glRectd": _emscripten_glRectd, "_emscripten_glRectdv": _emscripten_glRectdv, "_emscripten_glRectf": _emscripten_glRectf, "_emscripten_glRectfv": _emscripten_glRectfv, "_emscripten_glRecti": _emscripten_glRecti, "_emscripten_glRectiv": _emscripten_glRectiv, "_emscripten_glRects": _emscripten_glRects, "_emscripten_glRectsv": _emscripten_glRectsv, "_emscripten_glReleaseShaderCompiler": _emscripten_glReleaseShaderCompiler, "_emscripten_glRenderMode": _emscripten_glRenderMode, "_emscripten_glRenderbufferStorage": _emscripten_glRenderbufferStorage, "_emscripten_glRenderbufferStorageMultisample": _emscripten_glRenderbufferStorageMultisample, "_emscripten_glResetHistogram": _emscripten_glResetHistogram, "_emscripten_glResetMinmax": _emscripten_glResetMinmax, "_emscripten_glSampleCoverage": _emscripten_glSampleCoverage, "_emscripten_glScissor": _emscripten_glScissor, "_emscripten_glSecondaryColor3b": _emscripten_glSecondaryColor3b, "_emscripten_glSecondaryColor3bv": _emscripten_glSecondaryColor3bv, "_emscripten_glSecondaryColor3d": _emscripten_glSecondaryColor3d, "_emscripten_glSecondaryColor3dv": _emscripten_glSecondaryColor3dv, "_emscripten_glSecondaryColor3f": _emscripten_glSecondaryColor3f, "_emscripten_glSecondaryColor3fv": _emscripten_glSecondaryColor3fv, "_emscripten_glSecondaryColor3i": _emscripten_glSecondaryColor3i, "_emscripten_glSecondaryColor3iv": _emscripten_glSecondaryColor3iv, "_emscripten_glSecondaryColor3s": _emscripten_glSecondaryColor3s, "_emscripten_glSecondaryColor3sv": _emscripten_glSecondaryColor3sv, "_emscripten_glSecondaryColor3ub": _emscripten_glSecondaryColor3ub, "_emscripten_glSecondaryColor3ubv": _emscripten_glSecondaryColor3ubv, "_emscripten_glSecondaryColor3ui": _emscripten_glSecondaryColor3ui, "_emscripten_glSecondaryColor3uiv": _emscripten_glSecondaryColor3uiv, "_emscripten_glSecondaryColor3us": _emscripten_glSecondaryColor3us, "_emscripten_glSecondaryColor3usv": _emscripten_glSecondaryColor3usv, "_emscripten_glSecondaryColorPointer": _emscripten_glSecondaryColorPointer, "_emscripten_glSelectBuffer": _emscripten_glSelectBuffer, "_emscripten_glSeparableFilter2D": _emscripten_glSeparableFilter2D, "_emscripten_glShaderBinary": _emscripten_glShaderBinary, "_emscripten_glShaderSource": _emscripten_glShaderSource, "_emscripten_glStencilFunc": _emscripten_glStencilFunc, "_emscripten_glStencilFuncSeparate": _emscripten_glStencilFuncSeparate, "_emscripten_glStencilMask": _emscripten_glStencilMask, "_emscripten_glStencilMaskSeparate": _emscripten_glStencilMaskSeparate, "_emscripten_glStencilOp": _emscripten_glStencilOp, "_emscripten_glStencilOpSeparate": _emscripten_glStencilOpSeparate, "_emscripten_glTexBuffer": _emscripten_glTexBuffer, "_emscripten_glTexEnvf": _emscripten_glTexEnvf, "_emscripten_glTexEnvfv": _emscripten_glTexEnvfv, "_emscripten_glTexEnvi": _emscripten_glTexEnvi, "_emscripten_glTexEnviv": _emscripten_glTexEnviv, "_emscripten_glTexImage2D": _emscripten_glTexImage2D, "_emscripten_glTexImage3D": _emscripten_glTexImage3D, "_emscripten_glTexParameterIiv": _emscripten_glTexParameterIiv, "_emscripten_glTexParameterIuiv": _emscripten_glTexParameterIuiv, "_emscripten_glTexParameterf": _emscripten_glTexParameterf, "_emscripten_glTexParameterfv": _emscripten_glTexParameterfv, "_emscripten_glTexParameteri": _emscripten_glTexParameteri, "_emscripten_glTexParameteriv": _emscripten_glTexParameteriv, "_emscripten_glTexStorage2D": _emscripten_glTexStorage2D, "_emscripten_glTexStorage3D": _emscripten_glTexStorage3D, "_emscripten_glTexSubImage1D": _emscripten_glTexSubImage1D, "_emscripten_glTexSubImage2D": _emscripten_glTexSubImage2D, "_emscripten_glTexSubImage3D": _emscripten_glTexSubImage3D, "_emscripten_glTransformFeedbackVaryings": _emscripten_glTransformFeedbackVaryings, "_emscripten_glUniform1f": _emscripten_glUniform1f, "_emscripten_glUniform1fv": _emscripten_glUniform1fv, "_emscripten_glUniform1i": _emscripten_glUniform1i, "_emscripten_glUniform1iv": _emscripten_glUniform1iv, "_emscripten_glUniform1ui": _emscripten_glUniform1ui, "_emscripten_glUniform1uiv": _emscripten_glUniform1uiv, "_emscripten_glUniform2f": _emscripten_glUniform2f, "_emscripten_glUniform2fv": _emscripten_glUniform2fv, "_emscripten_glUniform2i": _emscripten_glUniform2i, "_emscripten_glUniform2iv": _emscripten_glUniform2iv, "_emscripten_glUniform2ui": _emscripten_glUniform2ui, "_emscripten_glUniform2uiv": _emscripten_glUniform2uiv, "_emscripten_glUniform3f": _emscripten_glUniform3f, "_emscripten_glUniform3fv": _emscripten_glUniform3fv, "_emscripten_glUniform3i": _emscripten_glUniform3i, "_emscripten_glUniform3iv": _emscripten_glUniform3iv, "_emscripten_glUniform3ui": _emscripten_glUniform3ui, "_emscripten_glUniform3uiv": _emscripten_glUniform3uiv, "_emscripten_glUniform4f": _emscripten_glUniform4f, "_emscripten_glUniform4fv": _emscripten_glUniform4fv, "_emscripten_glUniform4i": _emscripten_glUniform4i, "_emscripten_glUniform4iv": _emscripten_glUniform4iv, "_emscripten_glUniform4ui": _emscripten_glUniform4ui, "_emscripten_glUniform4uiv": _emscripten_glUniform4uiv, "_emscripten_glUniformBlockBinding": _emscripten_glUniformBlockBinding, "_emscripten_glUniformMatrix2fv": _emscripten_glUniformMatrix2fv, "_emscripten_glUniformMatrix2x3fv": _emscripten_glUniformMatrix2x3fv, "_emscripten_glUniformMatrix2x4fv": _emscripten_glUniformMatrix2x4fv, "_emscripten_glUniformMatrix3fv": _emscripten_glUniformMatrix3fv, "_emscripten_glUniformMatrix3x2fv": _emscripten_glUniformMatrix3x2fv, "_emscripten_glUniformMatrix3x4fv": _emscripten_glUniformMatrix3x4fv, "_emscripten_glUniformMatrix4fv": _emscripten_glUniformMatrix4fv, "_emscripten_glUniformMatrix4x2fv": _emscripten_glUniformMatrix4x2fv, "_emscripten_glUniformMatrix4x3fv": _emscripten_glUniformMatrix4x3fv, "_emscripten_glUnmapBuffer": _emscripten_glUnmapBuffer, "_emscripten_glUseProgram": _emscripten_glUseProgram, "_emscripten_glUseProgramObjectARB": _emscripten_glUseProgramObjectARB, "_emscripten_glValidateProgram": _emscripten_glValidateProgram, "_emscripten_glVertexAttrib1d": _emscripten_glVertexAttrib1d, "_emscripten_glVertexAttrib1dv": _emscripten_glVertexAttrib1dv, "_emscripten_glVertexAttrib1f": _emscripten_glVertexAttrib1f, "_emscripten_glVertexAttrib1fv": _emscripten_glVertexAttrib1fv, "_emscripten_glVertexAttrib1s": _emscripten_glVertexAttrib1s, "_emscripten_glVertexAttrib1sv": _emscripten_glVertexAttrib1sv, "_emscripten_glVertexAttrib2d": _emscripten_glVertexAttrib2d, "_emscripten_glVertexAttrib2dv": _emscripten_glVertexAttrib2dv, "_emscripten_glVertexAttrib2f": _emscripten_glVertexAttrib2f, "_emscripten_glVertexAttrib2fv": _emscripten_glVertexAttrib2fv, "_emscripten_glVertexAttrib2s": _emscripten_glVertexAttrib2s, "_emscripten_glVertexAttrib2sv": _emscripten_glVertexAttrib2sv, "_emscripten_glVertexAttrib3d": _emscripten_glVertexAttrib3d, "_emscripten_glVertexAttrib3dv": _emscripten_glVertexAttrib3dv, "_emscripten_glVertexAttrib3f": _emscripten_glVertexAttrib3f, "_emscripten_glVertexAttrib3fv": _emscripten_glVertexAttrib3fv, "_emscripten_glVertexAttrib3s": _emscripten_glVertexAttrib3s, "_emscripten_glVertexAttrib3sv": _emscripten_glVertexAttrib3sv, "_emscripten_glVertexAttrib4Nbv": _emscripten_glVertexAttrib4Nbv, "_emscripten_glVertexAttrib4Niv": _emscripten_glVertexAttrib4Niv, "_emscripten_glVertexAttrib4Nsv": _emscripten_glVertexAttrib4Nsv, "_emscripten_glVertexAttrib4Nub": _emscripten_glVertexAttrib4Nub, "_emscripten_glVertexAttrib4Nubv": _emscripten_glVertexAttrib4Nubv, "_emscripten_glVertexAttrib4Nuiv": _emscripten_glVertexAttrib4Nuiv, "_emscripten_glVertexAttrib4Nusv": _emscripten_glVertexAttrib4Nusv, "_emscripten_glVertexAttrib4bv": _emscripten_glVertexAttrib4bv, "_emscripten_glVertexAttrib4d": _emscripten_glVertexAttrib4d, "_emscripten_glVertexAttrib4dv": _emscripten_glVertexAttrib4dv, "_emscripten_glVertexAttrib4f": _emscripten_glVertexAttrib4f, "_emscripten_glVertexAttrib4fv": _emscripten_glVertexAttrib4fv, "_emscripten_glVertexAttrib4iv": _emscripten_glVertexAttrib4iv, "_emscripten_glVertexAttrib4s": _emscripten_glVertexAttrib4s, "_emscripten_glVertexAttrib4sv": _emscripten_glVertexAttrib4sv, "_emscripten_glVertexAttrib4ubv": _emscripten_glVertexAttrib4ubv, "_emscripten_glVertexAttrib4uiv": _emscripten_glVertexAttrib4uiv, "_emscripten_glVertexAttrib4usv": _emscripten_glVertexAttrib4usv, "_emscripten_glVertexAttribDivisor": _emscripten_glVertexAttribDivisor, "_emscripten_glVertexAttribI1i": _emscripten_glVertexAttribI1i, "_emscripten_glVertexAttribI1iv": _emscripten_glVertexAttribI1iv, "_emscripten_glVertexAttribI1ui": _emscripten_glVertexAttribI1ui, "_emscripten_glVertexAttribI1uiv": _emscripten_glVertexAttribI1uiv, "_emscripten_glVertexAttribI2i": _emscripten_glVertexAttribI2i, "_emscripten_glVertexAttribI2iv": _emscripten_glVertexAttribI2iv, "_emscripten_glVertexAttribI2ui": _emscripten_glVertexAttribI2ui, "_emscripten_glVertexAttribI2uiv": _emscripten_glVertexAttribI2uiv, "_emscripten_glVertexAttribI3i": _emscripten_glVertexAttribI3i, "_emscripten_glVertexAttribI3iv": _emscripten_glVertexAttribI3iv, "_emscripten_glVertexAttribI3ui": _emscripten_glVertexAttribI3ui, "_emscripten_glVertexAttribI3uiv": _emscripten_glVertexAttribI3uiv, "_emscripten_glVertexAttribI4bv": _emscripten_glVertexAttribI4bv, "_emscripten_glVertexAttribI4i": _emscripten_glVertexAttribI4i, "_emscripten_glVertexAttribI4iv": _emscripten_glVertexAttribI4iv, "_emscripten_glVertexAttribI4sv": _emscripten_glVertexAttribI4sv, "_emscripten_glVertexAttribI4ubv": _emscripten_glVertexAttribI4ubv, "_emscripten_glVertexAttribI4ui": _emscripten_glVertexAttribI4ui, "_emscripten_glVertexAttribI4uiv": _emscripten_glVertexAttribI4uiv, "_emscripten_glVertexAttribI4usv": _emscripten_glVertexAttribI4usv, "_emscripten_glVertexAttribIPointer": _emscripten_glVertexAttribIPointer, "_emscripten_glVertexAttribPointer": _emscripten_glVertexAttribPointer, "_emscripten_glViewport": _emscripten_glViewport, "_emscripten_glWindowPos2d": _emscripten_glWindowPos2d, "_emscripten_glWindowPos2dv": _emscripten_glWindowPos2dv, "_emscripten_glWindowPos2f": _emscripten_glWindowPos2f, "_emscripten_glWindowPos2fv": _emscripten_glWindowPos2fv, "_emscripten_glWindowPos2i": _emscripten_glWindowPos2i, "_emscripten_glWindowPos2iv": _emscripten_glWindowPos2iv, "_emscripten_glWindowPos2s": _emscripten_glWindowPos2s, "_emscripten_glWindowPos2sv": _emscripten_glWindowPos2sv, "_emscripten_glWindowPos3d": _emscripten_glWindowPos3d, "_emscripten_glWindowPos3dv": _emscripten_glWindowPos3dv, "_emscripten_glWindowPos3f": _emscripten_glWindowPos3f, "_emscripten_glWindowPos3fv": _emscripten_glWindowPos3fv, "_emscripten_glWindowPos3i": _emscripten_glWindowPos3i, "_emscripten_glWindowPos3iv": _emscripten_glWindowPos3iv, "_emscripten_glWindowPos3s": _emscripten_glWindowPos3s, "_emscripten_glWindowPos3sv": _emscripten_glWindowPos3sv, "_emscripten_memcpy_big": _emscripten_memcpy_big, "_emscripten_resize_heap": _emscripten_resize_heap, "_emscripten_set_canvas_size": _emscripten_set_canvas_size, "_emscripten_set_keydown_callback_on_thread": _emscripten_set_keydown_callback_on_thread, "_emscripten_set_keypress_callback_on_thread": _emscripten_set_keypress_callback_on_thread, "_emscripten_set_keyup_callback_on_thread": _emscripten_set_keyup_callback_on_thread, "_emscripten_set_main_loop": _emscripten_set_main_loop, "_emscripten_set_main_loop_timing": _emscripten_set_main_loop_timing, "_exit": _exit, "_getenv": _getenv, "_glActiveTexture": _glActiveTexture, "_glAttachShader": _glAttachShader, "_glBindBuffer": _glBindBuffer, "_glBindFramebuffer": _glBindFramebuffer, "_glBindRenderbuffer": _glBindRenderbuffer, "_glBindTexture": _glBindTexture, "_glBlendColor": _glBlendColor, "_glBlendEquationSeparate": _glBlendEquationSeparate, "_glBlendFuncSeparate": _glBlendFuncSeparate, "_glBufferData": _glBufferData, "_glBufferSubData": _glBufferSubData, "_glCheckFramebufferStatus": _glCheckFramebufferStatus, "_glClear": _glClear, "_glClearColor": _glClearColor, "_glClearDepthf": _glClearDepthf, "_glClearStencil": _glClearStencil, "_glColorMask": _glColorMask, "_glCompileShader": _glCompileShader, "_glCompressedTexImage2D": _glCompressedTexImage2D, "_glCompressedTexSubImage2D": _glCompressedTexSubImage2D, "_glCreateProgram": _glCreateProgram, "_glCreateShader": _glCreateShader, "_glCullFace": _glCullFace, "_glDeleteBuffers": _glDeleteBuffers, "_glDeleteFramebuffers": _glDeleteFramebuffers, "_glDeleteProgram": _glDeleteProgram, "_glDeleteRenderbuffers": _glDeleteRenderbuffers, "_glDeleteShader": _glDeleteShader, "_glDeleteTextures": _glDeleteTextures, "_glDepthFunc": _glDepthFunc, "_glDepthMask": _glDepthMask, "_glDetachShader": _glDetachShader, "_glDisable": _glDisable, "_glDisableVertexAttribArray": _glDisableVertexAttribArray, "_glDrawArrays": _glDrawArrays, "_glDrawElements": _glDrawElements, "_glEnable": _glEnable, "_glEnableVertexAttribArray": _glEnableVertexAttribArray, "_glFlush": _glFlush, "_glFramebufferRenderbuffer": _glFramebufferRenderbuffer, "_glFramebufferTexture2D": _glFramebufferTexture2D, "_glFrontFace": _glFrontFace, "_glGenBuffers": _glGenBuffers, "_glGenFramebuffers": _glGenFramebuffers, "_glGenRenderbuffers": _glGenRenderbuffers, "_glGenTextures": _glGenTextures, "_glGenerateMipmap": _glGenerateMipmap, "_glGetActiveAttrib": _glGetActiveAttrib, "_glGetActiveUniform": _glGetActiveUniform, "_glGetAttribLocation": _glGetAttribLocation, "_glGetError": _glGetError, "_glGetFloatv": _glGetFloatv, "_glGetIntegerv": _glGetIntegerv, "_glGetProgramInfoLog": _glGetProgramInfoLog, "_glGetProgramiv": _glGetProgramiv, "_glGetShaderInfoLog": _glGetShaderInfoLog, "_glGetShaderiv": _glGetShaderiv, "_glGetString": _glGetString, "_glGetUniformLocation": _glGetUniformLocation, "_glLinkProgram": _glLinkProgram, "_glPixelStorei": _glPixelStorei, "_glReadPixels": _glReadPixels, "_glRenderbufferStorage": _glRenderbufferStorage, "_glScissor": _glScissor, "_glShaderSource": _glShaderSource, "_glStencilFuncSeparate": _glStencilFuncSeparate, "_glStencilOpSeparate": _glStencilOpSeparate, "_glTexImage2D": _glTexImage2D, "_glTexParameterf": _glTexParameterf, "_glTexParameterfv": _glTexParameterfv, "_glTexParameteri": _glTexParameteri, "_glTexSubImage2D": _glTexSubImage2D, "_glUniform1i": _glUniform1i, "_glUniform1iv": _glUniform1iv, "_glUniform4fv": _glUniform4fv, "_glUniformMatrix3fv": _glUniformMatrix3fv, "_glUniformMatrix4fv": _glUniformMatrix4fv, "_glUseProgram": _glUseProgram, "_glVertexAttribPointer": _glVertexAttribPointer, "_glViewport": _glViewport, "_llvm_cos_f32": _llvm_cos_f32, "_llvm_cos_f64": _llvm_cos_f64, "_llvm_sin_f32": _llvm_sin_f32, "_llvm_sin_f64": _llvm_sin_f64, "_llvm_stackrestore": _llvm_stackrestore, "_llvm_stacksave": _llvm_stacksave, "_llvm_trap": _llvm_trap, "_longjmp": _longjmp, "_nanosleep": _nanosleep, "_pthread_cond_wait": _pthread_cond_wait, "_pthread_getspecific": _pthread_getspecific, "_pthread_key_create": _pthread_key_create, "_pthread_once": _pthread_once, "_pthread_setspecific": _pthread_setspecific, "_strftime": _strftime, "_strftime_l": _strftime_l, "_time": _time, "_usleep": _usleep, "emscriptenWebGLGet": emscriptenWebGLGet, "emscriptenWebGLGetTexPixelData": emscriptenWebGLGetTexPixelData, "emscriptenWebGLGetUniform": emscriptenWebGLGetUniform, "emscriptenWebGLGetVertexAttrib": emscriptenWebGLGetVertexAttrib, "stringToNewUTF8": stringToNewUTF8, "DYNAMICTOP_PTR": DYNAMICTOP_PTR, "tempDoublePtr": tempDoublePtr };
 // EMSCRIPTEN_START_ASM
 var asm =Module["asm"]// EMSCRIPTEN_END_ASM
 (asmGlobalArg, Module.asmLibraryArg, buffer);
-
-var real___GLOBAL__I_000101 = asm["__GLOBAL__I_000101"]; asm["__GLOBAL__I_000101"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__I_000101.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_Angle_cpp = asm["__GLOBAL__sub_I_Angle_cpp"]; asm["__GLOBAL__sub_I_Angle_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_Angle_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_BlendMode_cpp = asm["__GLOBAL__sub_I_BlendMode_cpp"]; asm["__GLOBAL__sub_I_BlendMode_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_BlendMode_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_Color_cpp = asm["__GLOBAL__sub_I_Color_cpp"]; asm["__GLOBAL__sub_I_Color_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_Color_cpp.apply(null, arguments);
-};
 
 var real___GLOBAL__sub_I_Emscripten_cpp = asm["__GLOBAL__sub_I_Emscripten_cpp"]; asm["__GLOBAL__sub_I_Emscripten_cpp"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return real___GLOBAL__sub_I_Emscripten_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_JoystickImpl_cpp = asm["__GLOBAL__sub_I_JoystickImpl_cpp"]; asm["__GLOBAL__sub_I_JoystickImpl_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_JoystickImpl_cpp.apply(null, arguments);
 };
 
 var real___GLOBAL__sub_I_RenderStates_cpp = asm["__GLOBAL__sub_I_RenderStates_cpp"]; asm["__GLOBAL__sub_I_RenderStates_cpp"] = function() {
@@ -11531,42 +13611,6 @@ var real___GLOBAL__sub_I_RenderTarget_cpp = asm["__GLOBAL__sub_I_RenderTarget_cp
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return real___GLOBAL__sub_I_RenderTarget_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_Texture_cpp = asm["__GLOBAL__sub_I_Texture_cpp"]; asm["__GLOBAL__sub_I_Texture_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_Texture_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_Time_cpp = asm["__GLOBAL__sub_I_Time_cpp"]; asm["__GLOBAL__sub_I_Time_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_Time_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_Transform_cpp = asm["__GLOBAL__sub_I_Transform_cpp"]; asm["__GLOBAL__sub_I_Transform_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_Transform_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_VertexBuffer_cpp = asm["__GLOBAL__sub_I_VertexBuffer_cpp"]; asm["__GLOBAL__sub_I_VertexBuffer_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_VertexBuffer_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_bgfx_cpp = asm["__GLOBAL__sub_I_bgfx_cpp"]; asm["__GLOBAL__sub_I_bgfx_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_bgfx_cpp.apply(null, arguments);
-};
-
-var real___GLOBAL__sub_I_iostream_cpp = asm["__GLOBAL__sub_I_iostream_cpp"]; asm["__GLOBAL__sub_I_iostream_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return real___GLOBAL__sub_I_iostream_cpp.apply(null, arguments);
 };
 
 var real___GLOBAL__sub_I_math_cpp = asm["__GLOBAL__sub_I_math_cpp"]; asm["__GLOBAL__sub_I_math_cpp"] = function() {
@@ -11635,6 +13679,12 @@ var real__llvm_bswap_i32 = asm["_llvm_bswap_i32"]; asm["_llvm_bswap_i32"] = func
   return real__llvm_bswap_i32.apply(null, arguments);
 };
 
+var real__llvm_rint_f64 = asm["_llvm_rint_f64"]; asm["_llvm_rint_f64"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return real__llvm_rint_f64.apply(null, arguments);
+};
+
 var real__main = asm["_main"]; asm["_main"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -11675,6 +13725,12 @@ var real__realloc = asm["_realloc"]; asm["_realloc"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return real__realloc.apply(null, arguments);
+};
+
+var real__round = asm["_round"]; asm["_round"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return real__round.apply(null, arguments);
 };
 
 var real__saveSetjmp = asm["_saveSetjmp"]; asm["_saveSetjmp"] = function() {
@@ -11731,30 +13787,10 @@ var real_stackSave = asm["stackSave"]; asm["stackSave"] = function() {
   return real_stackSave.apply(null, arguments);
 };
 Module["asm"] = asm;
-var __GLOBAL__I_000101 = Module["__GLOBAL__I_000101"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__I_000101"].apply(null, arguments) };
-var __GLOBAL__sub_I_Angle_cpp = Module["__GLOBAL__sub_I_Angle_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_Angle_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_BlendMode_cpp = Module["__GLOBAL__sub_I_BlendMode_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_BlendMode_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_Color_cpp = Module["__GLOBAL__sub_I_Color_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_Color_cpp"].apply(null, arguments) };
 var __GLOBAL__sub_I_Emscripten_cpp = Module["__GLOBAL__sub_I_Emscripten_cpp"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["__GLOBAL__sub_I_Emscripten_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_JoystickImpl_cpp = Module["__GLOBAL__sub_I_JoystickImpl_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_JoystickImpl_cpp"].apply(null, arguments) };
 var __GLOBAL__sub_I_RenderStates_cpp = Module["__GLOBAL__sub_I_RenderStates_cpp"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -11763,30 +13799,6 @@ var __GLOBAL__sub_I_RenderTarget_cpp = Module["__GLOBAL__sub_I_RenderTarget_cpp"
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["__GLOBAL__sub_I_RenderTarget_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_Texture_cpp = Module["__GLOBAL__sub_I_Texture_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_Texture_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_Time_cpp = Module["__GLOBAL__sub_I_Time_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_Time_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_Transform_cpp = Module["__GLOBAL__sub_I_Transform_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_Transform_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_VertexBuffer_cpp = Module["__GLOBAL__sub_I_VertexBuffer_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_VertexBuffer_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_bgfx_cpp = Module["__GLOBAL__sub_I_bgfx_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_bgfx_cpp"].apply(null, arguments) };
-var __GLOBAL__sub_I_iostream_cpp = Module["__GLOBAL__sub_I_iostream_cpp"] = function() {
-  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
-  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
-  return Module["asm"]["__GLOBAL__sub_I_iostream_cpp"].apply(null, arguments) };
 var __GLOBAL__sub_I_math_cpp = Module["__GLOBAL__sub_I_math_cpp"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -11831,6 +13843,10 @@ var _llvm_bswap_i32 = Module["_llvm_bswap_i32"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["_llvm_bswap_i32"].apply(null, arguments) };
+var _llvm_rint_f64 = Module["_llvm_rint_f64"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["_llvm_rint_f64"].apply(null, arguments) };
 var _main = Module["_main"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -11867,6 +13883,10 @@ var _realloc = Module["_realloc"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["_realloc"].apply(null, arguments) };
+var _round = Module["_round"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["_round"].apply(null, arguments) };
 var _saveSetjmp = Module["_saveSetjmp"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -11963,10 +13983,26 @@ var dynCall_iij = Module["dynCall_iij"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_iij"].apply(null, arguments) };
+var dynCall_iiji = Module["dynCall_iiji"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_iiji"].apply(null, arguments) };
 var dynCall_iijii = Module["dynCall_iijii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_iijii"].apply(null, arguments) };
+var dynCall_ji = Module["dynCall_ji"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_ji"].apply(null, arguments) };
+var dynCall_jiij = Module["dynCall_jiij"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_jiij"].apply(null, arguments) };
+var dynCall_jij = Module["dynCall_jij"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_jij"].apply(null, arguments) };
 var dynCall_jiji = Module["dynCall_jiji"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
@@ -12135,14 +14171,26 @@ var dynCall_viiiiiiiiiiiiiii = Module["dynCall_viiiiiiiiiiiiiii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_viiiiiiiiiiiiiii"].apply(null, arguments) };
+var dynCall_viij = Module["dynCall_viij"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_viij"].apply(null, arguments) };
 var dynCall_viijii = Module["dynCall_viijii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_viijii"].apply(null, arguments) };
+var dynCall_vij = Module["dynCall_vij"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_vij"].apply(null, arguments) };
 var dynCall_vijii = Module["dynCall_vijii"] = function() {
   assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
   assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
   return Module["asm"]["dynCall_vijii"].apply(null, arguments) };
+var dynCall_vijjiii = Module["dynCall_vijjiii"] = function() {
+  assert(runtimeInitialized, 'you need to wait for the runtime to be ready (e.g. wait for main() to be called)');
+  assert(!runtimeExited, 'the runtime was exited (use NO_EXIT_RUNTIME to keep it alive after main() exits)');
+  return Module["asm"]["dynCall_vijjiii"].apply(null, arguments) };
 ;
 
 
@@ -12158,7 +14206,7 @@ if (!Module["cwrap"]) Module["cwrap"] = function() { abort("'cwrap' was not expo
 if (!Module["setValue"]) Module["setValue"] = function() { abort("'setValue' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["getValue"]) Module["getValue"] = function() { abort("'getValue' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["allocate"]) Module["allocate"] = function() { abort("'allocate' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
-if (!Module["getMemory"]) Module["getMemory"] = function() { abort("'getMemory' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
+Module["getMemory"] = getMemory;
 if (!Module["Pointer_stringify"]) Module["Pointer_stringify"] = function() { abort("'Pointer_stringify' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["AsciiToString"]) Module["AsciiToString"] = function() { abort("'AsciiToString' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["stringToAscii"]) Module["stringToAscii"] = function() { abort("'stringToAscii' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
@@ -12183,18 +14231,18 @@ if (!Module["addOnPostRun"]) Module["addOnPostRun"] = function() { abort("'addOn
 if (!Module["writeStringToMemory"]) Module["writeStringToMemory"] = function() { abort("'writeStringToMemory' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["writeArrayToMemory"]) Module["writeArrayToMemory"] = function() { abort("'writeArrayToMemory' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["writeAsciiToMemory"]) Module["writeAsciiToMemory"] = function() { abort("'writeAsciiToMemory' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
-if (!Module["addRunDependency"]) Module["addRunDependency"] = function() { abort("'addRunDependency' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["removeRunDependency"]) Module["removeRunDependency"] = function() { abort("'removeRunDependency' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
+Module["addRunDependency"] = addRunDependency;
+Module["removeRunDependency"] = removeRunDependency;
 if (!Module["ENV"]) Module["ENV"] = function() { abort("'ENV' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["FS"]) Module["FS"] = function() { abort("'FS' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
-if (!Module["FS_createFolder"]) Module["FS_createFolder"] = function() { abort("'FS_createFolder' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createPath"]) Module["FS_createPath"] = function() { abort("'FS_createPath' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createDataFile"]) Module["FS_createDataFile"] = function() { abort("'FS_createDataFile' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createPreloadedFile"]) Module["FS_createPreloadedFile"] = function() { abort("'FS_createPreloadedFile' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createLazyFile"]) Module["FS_createLazyFile"] = function() { abort("'FS_createLazyFile' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createLink"]) Module["FS_createLink"] = function() { abort("'FS_createLink' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_createDevice"]) Module["FS_createDevice"] = function() { abort("'FS_createDevice' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
-if (!Module["FS_unlink"]) Module["FS_unlink"] = function() { abort("'FS_unlink' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ). Alternatively, forcing filesystem support (-s FORCE_FILESYSTEM=1) can export this for you") };
+Module["FS_createFolder"] = FS.createFolder;
+Module["FS_createPath"] = FS.createPath;
+Module["FS_createDataFile"] = FS.createDataFile;
+Module["FS_createPreloadedFile"] = FS.createPreloadedFile;
+Module["FS_createLazyFile"] = FS.createLazyFile;
+Module["FS_createLink"] = FS.createLink;
+Module["FS_createDevice"] = FS.createDevice;
+Module["FS_unlink"] = FS.unlink;
 if (!Module["GL"]) Module["GL"] = function() { abort("'GL' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["dynamicAlloc"]) Module["dynamicAlloc"] = function() { abort("'dynamicAlloc' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Module["warnOnce"]) Module["warnOnce"] = function() { abort("'warnOnce' was not exported. add it to EXTRA_EXPORTED_RUNTIME_METHODS (see the FAQ)") };
